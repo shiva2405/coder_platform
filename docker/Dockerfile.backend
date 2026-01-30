@@ -1,0 +1,69 @@
+# Backend Dockerfile - Java Spring Boot with all compilers/interpreters
+FROM eclipse-temurin:17-jdk-jammy AS builder
+
+WORKDIR /app
+
+# Copy Maven files
+COPY backend/pom.xml .
+COPY backend/src ./src
+
+# Install Maven and build
+RUN apt-get update && apt-get install -y maven && \
+    mvn clean package -DskipTests
+
+# Production image with all language support
+FROM eclipse-temurin:17-jdk-jammy
+
+WORKDIR /app
+
+# Install all compilers and interpreters
+RUN apt-get update && apt-get install -y \
+    # Python
+    python3 python3-pip \
+    # Node.js
+    curl \
+    # C/C++
+    gcc g++ \
+    # Go
+    golang-go \
+    # Ruby
+    ruby \
+    # PHP
+    php-cli \
+    # Perl
+    perl \
+    # Rust
+    rustc \
+    # Swift dependencies
+    binutils libc6-dev libcurl4-openssl-dev libedit2 libgcc-9-dev libpython3.8 \
+    libsqlite3-0 libstdc++-9-dev libxml2-dev libz3-dev pkg-config tzdata zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Node.js 20
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install TypeScript globally
+RUN npm install -g typescript ts-node
+
+# Install Kotlin
+RUN curl -L -o /tmp/kotlin.zip https://github.com/JetBrains/kotlin/releases/download/v1.9.22/kotlin-compiler-1.9.22.zip && \
+    unzip /tmp/kotlin.zip -d /opt && \
+    rm /tmp/kotlin.zip
+ENV PATH="/opt/kotlinc/bin:${PATH}"
+
+# Create temp directory for code execution
+RUN mkdir -p /tmp/coder-platform && chmod 777 /tmp/coder-platform
+
+# Copy the built JAR
+COPY --from=builder /app/target/*.jar app.jar
+
+# Expose port
+EXPOSE 8080
+
+# Set environment variables
+ENV JAVA_OPTS="-Xmx512m -Xms256m"
+
+# Run the application
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]
