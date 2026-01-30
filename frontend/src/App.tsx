@@ -206,7 +206,7 @@ function App() {
       {/* Footer */}
       <div className="px-4 py-2 bg-editor-sidebar border-t border-editor-border text-xs text-gray-500 flex justify-between">
         <span>
-          Time Limit: 30s • Memory Limit: 1MB
+          Time Limit: 30s • Memory Limit: 128MB
         </span>
         <span>
           Press Ctrl+Enter to run

@@ -12,6 +12,11 @@ services:
     restart: unless-stopped
     networks:
       - coder-network
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
 
   backend:
     build:
@@ -21,24 +26,28 @@ services:
       - "8080:8080"
     environment:
       - SPRING_PROFILES_ACTIVE=docker
+      - JAVA_OPTS=-Xmx4g -Xms1g -XX:+UseG1GC -XX:MaxGCPauseMillis=100
       - EXECUTION_TIMEOUT=30000
-      - EXECUTION_MEMORY_LIMIT=1048576
+      - EXECUTION_MEMORY_LIMIT=134217728
       - EXECUTION_MAX_OUTPUT_SIZE=65536
       - CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost
+      # Thread pool settings for high concurrency
+      - SERVER_TOMCAT_THREADS_MAX=400
+      - SERVER_TOMCAT_THREADS_MIN_SPARE=50
     volumes:
       - /tmp/coder-platform:/tmp/coder-platform
     restart: unless-stopped
     networks:
       - coder-network
-    # Resource limits
+    # Optimized for 16GB RAM - use most for execution
     deploy:
       resources:
         limits:
-          cpus: '2'
-          memory: 2G
+          cpus: '8'
+          memory: 14G
         reservations:
-          cpus: '0.5'
-          memory: 512M
+          cpus: '2'
+          memory: 4G
 
 networks:
   coder-network:

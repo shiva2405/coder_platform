@@ -52,20 +52,21 @@ public class CodeExecutionService {
             File sourceFile = new File(workDirFile, fileName);
             Files.writeString(sourceFile.toPath(), request.getCode());
 
+            long compileTimeMs = 0;
+            
             // Compile if necessary
             if (language.isRequiresCompilation()) {
                 List<String> compileCmd = languageExecutor.getCompileCommand(language, sourceFile, workDirFile);
                 if (!compileCmd.isEmpty()) {
                     ProcessResult compileResult = runProcess(compileCmd, workDirFile, null, config.getTimeout());
+                    compileTimeMs = compileResult.executionTimeMs;
                     
                     if (compileResult.exitCode != 0) {
-                        long executionTime = System.currentTimeMillis() - startTime;
-                        return CodeExecutionResponse.compileError(compileResult.stderr, executionTime);
+                        return CodeExecutionResponse.compileError(compileResult.stderr, compileTimeMs);
                     }
                     
                     if (compileResult.timedOut) {
-                        long executionTime = System.currentTimeMillis() - startTime;
-                        return CodeExecutionResponse.timeout("Compilation timed out", executionTime);
+                        return CodeExecutionResponse.timeout("Compilation timed out", compileTimeMs);
                     }
                 }
             }
@@ -74,7 +75,8 @@ public class CodeExecutionService {
             List<String> runCmd = languageExecutor.getRunCommand(language, sourceFile, workDirFile, config.getMemoryLimit());
             ProcessResult runResult = runProcess(runCmd, workDirFile, request.getStdin(), config.getTimeout());
             
-            long executionTime = System.currentTimeMillis() - startTime;
+            // Use actual process execution time (not wall clock including thread overhead)
+            long executionTime = runResult.executionTimeMs;
 
             if (runResult.timedOut) {
                 return CodeExecutionResponse.timeout(truncateOutput(runResult.stdout), executionTime);
@@ -136,6 +138,12 @@ public class CodeExecutionService {
         Map<String, String> env = pb.environment();
         env.put("LANG", "en_US.UTF-8");
         
+        // Read stdout and stderr using dedicated threads with pre-allocated buffers
+        StringBuilder stdout = new StringBuilder(4096);
+        StringBuilder stderr = new StringBuilder(4096);
+        
+        // Start timing ONLY when process actually starts
+        long processStartTime = System.nanoTime();
         Process process = pb.start();
 
         // Write stdin if provided
@@ -148,12 +156,8 @@ public class CodeExecutionService {
             process.getOutputStream().close();
         }
 
-        // Read stdout and stderr
-        StringBuilder stdout = new StringBuilder();
-        StringBuilder stderr = new StringBuilder();
-
         Thread stdoutReader = new Thread(() -> {
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()), 8192)) {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     if (stdout.length() < config.getMaxOutputSize()) {
@@ -161,12 +165,15 @@ public class CodeExecutionService {
                     }
                 }
             } catch (IOException e) {
-                logger.error("Error reading stdout", e);
+                // Process may have been killed, ignore
+                if (!e.getMessage().contains("Stream closed")) {
+                    logger.error("Error reading stdout", e);
+                }
             }
-        });
+        }, "stdout-reader");
 
         Thread stderrReader = new Thread(() -> {
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()))) {
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getErrorStream()), 8192)) {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     if (stderr.length() < config.getMaxOutputSize()) {
@@ -174,31 +181,39 @@ public class CodeExecutionService {
                     }
                 }
             } catch (IOException e) {
-                logger.error("Error reading stderr", e);
+                // Process may have been killed, ignore
+                if (!e.getMessage().contains("Stream closed")) {
+                    logger.error("Error reading stderr", e);
+                }
             }
-        });
+        }, "stderr-reader");
 
         stdoutReader.start();
         stderrReader.start();
 
         boolean completed = process.waitFor(timeoutMs, TimeUnit.MILLISECONDS);
+        
+        // Measure execution time right after process completes (before thread cleanup)
+        long processEndTime = System.nanoTime();
+        long actualExecutionTimeMs = (processEndTime - processStartTime) / 1_000_000;
 
         if (!completed) {
             process.destroyForcibly();
-            stdoutReader.join(1000);
-            stderrReader.join(1000);
-            return new ProcessResult(-1, stdout.toString(), stderr.toString(), true, false);
+            stdoutReader.join(500);
+            stderrReader.join(500);
+            return new ProcessResult(-1, stdout.toString(), stderr.toString(), true, false, actualExecutionTimeMs);
         }
 
-        stdoutReader.join(1000);
-        stderrReader.join(1000);
+        // Wait for reader threads to finish (short timeout since process is done)
+        stdoutReader.join(500);
+        stderrReader.join(500);
 
         int exitCode = process.exitValue();
         boolean memoryExceeded = stderr.toString().contains("OutOfMemoryError") 
                               || stderr.toString().contains("Cannot allocate memory")
-                              || stderr.toString().contains("memory");
+                              || stderr.toString().contains("Too small maximum heap");
 
-        return new ProcessResult(exitCode, stdout.toString(), stderr.toString(), false, memoryExceeded);
+        return new ProcessResult(exitCode, stdout.toString(), stderr.toString(), false, memoryExceeded, actualExecutionTimeMs);
     }
 
     private String truncateOutput(String output) {
@@ -286,13 +301,15 @@ public class CodeExecutionService {
         final String stderr;
         final boolean timedOut;
         final boolean memoryExceeded;
+        final long executionTimeMs;  // Actual process execution time
 
-        ProcessResult(int exitCode, String stdout, String stderr, boolean timedOut, boolean memoryExceeded) {
+        ProcessResult(int exitCode, String stdout, String stderr, boolean timedOut, boolean memoryExceeded, long executionTimeMs) {
             this.exitCode = exitCode;
             this.stdout = stdout;
             this.stderr = stderr;
             this.timedOut = timedOut;
             this.memoryExceeded = memoryExceeded;
+            this.executionTimeMs = executionTimeMs;
         }
     }
 }

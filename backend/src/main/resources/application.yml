@@ -1,5 +1,9 @@
 server:
   port: 8080
+  tomcat:
+    threads:
+      max: 200
+      min-spare: 20
 
 spring:
   application:
@@ -7,9 +11,9 @@ spring:
 
 # Code execution configuration
 execution:
-  timeout: 30000          # 30 seconds in milliseconds
-  memory-limit: 1048576   # 1MB in bytes
-  max-output-size: 65536  # 64KB output limit
+  timeout: 30000            # 30 seconds in milliseconds
+  memory-limit: 134217728   # 128MB in bytes (enough for JVM languages to start)
+  max-output-size: 65536    # 64KB output limit
   temp-directory: /tmp/coder-platform
 
 # CORS configuration

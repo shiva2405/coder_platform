@@ -74,15 +74,19 @@ public class LanguageExecutor {
         List<String> command = new ArrayList<>();
         String fileName = sourceFile.getName();
         String baseName = fileName.substring(0, fileName.lastIndexOf('.'));
-        long memoryLimitKB = memoryLimitBytes / 1024;
-
-        // Add memory limit wrapper for Unix systems
-        boolean isUnix = !System.getProperty("os.name").toLowerCase().contains("windows");
+        
+        // Calculate memory limits - ensure minimum viable limits for each runtime
+        long memoryLimitMB = Math.max(memoryLimitBytes / (1024 * 1024), 1);
+        // Java/Kotlin need at least 8MB to start
+        long jvmMemoryMB = Math.max(memoryLimitMB, 8);
+        // Node needs at least 4MB
+        long nodeMemoryMB = Math.max(memoryLimitMB, 4);
 
         switch (language) {
             case JAVA:
                 command.add("java");
-                command.add("-Xmx" + memoryLimitKB + "k");
+                command.add("-Xmx" + jvmMemoryMB + "m");
+                command.add("-Xms" + Math.min(jvmMemoryMB, 4) + "m");
                 command.add(baseName);
                 break;
 
@@ -93,13 +97,13 @@ public class LanguageExecutor {
 
             case JAVASCRIPT:
                 command.add("node");
-                command.add("--max-old-space-size=" + (memoryLimitKB / 1024));
+                command.add("--max-old-space-size=" + nodeMemoryMB);
                 command.add(fileName);
                 break;
 
             case TYPESCRIPT:
                 command.add("node");
-                command.add("--max-old-space-size=" + (memoryLimitKB / 1024));
+                command.add("--max-old-space-size=" + nodeMemoryMB);
                 command.add(baseName + ".js");
                 break;
 
@@ -127,7 +131,8 @@ public class LanguageExecutor {
 
             case KOTLIN:
                 command.add("java");
-                command.add("-Xmx" + memoryLimitKB + "k");
+                command.add("-Xmx" + jvmMemoryMB + "m");
+                command.add("-Xms" + Math.min(jvmMemoryMB, 4) + "m");
                 command.add("-jar");
                 command.add(baseName + ".jar");
                 break;
