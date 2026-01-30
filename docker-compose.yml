@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - coder-network
+
+  backend:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.backend
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - EXECUTION_TIMEOUT=30000
+      - EXECUTION_MEMORY_LIMIT=1048576
+      - EXECUTION_MAX_OUTPUT_SIZE=65536
+      - CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost
+    volumes:
+      - /tmp/coder-platform:/tmp/coder-platform
+    restart: unless-stopped
+    networks:
+      - coder-network
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+networks:
+  coder-network:
+    driver: bridge

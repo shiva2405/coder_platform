@@ -1,0 +1,24 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: coder-platform
+
+# Code execution configuration
+execution:
+  timeout: 30000          # 30 seconds in milliseconds
+  memory-limit: 1048576   # 1MB in bytes
+  max-output-size: 65536  # 64KB output limit
+  temp-directory: /tmp/coder-platform
+
+# CORS configuration
+cors:
+  allowed-origins: http://localhost:3000,http://localhost:5173
+  allowed-methods: GET,POST,OPTIONS
+  allowed-headers: "*"
+
+logging:
+  level:
+    com.coderplatform: DEBUG
+    root: INFO
