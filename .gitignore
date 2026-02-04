@@ -26,3 +26,11 @@ Thumbs.db
 *.tmp
 *.temp
 /tmp/
+
+# Test/Documentation files with sensitive data
+SF_1/
+doc.pdf
+
+# Azure local credentials (if any)
+*.publishsettings
+azure-credentials.json

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Play, Sun, Moon, RotateCcw, Settings } from 'lucide-react';
+import { Play, Sun, Moon, RotateCcw } from 'lucide-react';
 import { Language, EditorTheme } from '../types';
 import LanguageSelector from './LanguageSelector';
 
@@ -29,10 +29,10 @@ const Toolbar: React.FC<ToolbarProps> = ({
       {/* Left section */}
       <div className="flex items-center gap-4">
         <div className="flex items-center gap-2">
-          <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
-            <span className="text-white font-bold text-sm">&lt;/&gt;</span>
+          <div className="w-8 h-8 bg-gradient-to-br from-emerald-500 to-blue-600 rounded-lg flex items-center justify-center">
+            <span className="text-white font-bold text-sm">SC</span>
           </div>
-          <span className="font-semibold text-lg">Coder Platform</span>
+          <span className="font-semibold text-lg text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-blue-500">SimplyCode</span>
         </div>
 
         <div className="h-6 w-px bg-editor-border" />
