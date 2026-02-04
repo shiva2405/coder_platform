@@ -1,4 +1,4 @@
-# Backend Dockerfile - Java Spring Boot with all compilers/interpreters
+# SimplyCode Backend - Java Spring Boot with all compilers/interpreters
 FROM eclipse-temurin:17-jdk-jammy AS builder
 
 WORKDIR /app
@@ -21,7 +21,7 @@ RUN apt-get update && apt-get install -y \
     # Python
     python3 python3-pip \
     # Node.js
-    curl \
+    curl wget unzip \
     # C/C++
     gcc g++ \
     # Go
@@ -34,9 +34,6 @@ RUN apt-get update && apt-get install -y \
     perl \
     # Rust
     rustc \
-    # Swift dependencies
-    binutils libc6-dev libcurl4-openssl-dev libedit2 libgcc-9-dev libpython3.8 \
-    libsqlite3-0 libstdc++-9-dev libxml2-dev libz3-dev pkg-config tzdata zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js 20
@@ -45,7 +42,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     rm -rf /var/lib/apt/lists/*
 
 # Install TypeScript globally
-RUN npm install -g typescript ts-node
+RUN npm install -g typescript
 
 # Install Kotlin
 RUN curl -L -o /tmp/kotlin.zip https://github.com/JetBrains/kotlin/releases/download/v1.9.22/kotlin-compiler-1.9.22.zip && \
@@ -53,8 +50,15 @@ RUN curl -L -o /tmp/kotlin.zip https://github.com/JetBrains/kotlin/releases/down
     rm /tmp/kotlin.zip
 ENV PATH="/opt/kotlinc/bin:${PATH}"
 
+# Install Swift (Ubuntu 22.04)
+RUN wget -q https://download.swift.org/swift-5.9.2-release/ubuntu2204/swift-5.9.2-RELEASE/swift-5.9.2-RELEASE-ubuntu22.04.tar.gz && \
+    tar xzf swift-5.9.2-RELEASE-ubuntu22.04.tar.gz && \
+    mv swift-5.9.2-RELEASE-ubuntu22.04 /opt/swift && \
+    rm swift-5.9.2-RELEASE-ubuntu22.04.tar.gz
+ENV PATH="/opt/swift/usr/bin:${PATH}"
+
 # Create temp directory for code execution
-RUN mkdir -p /tmp/coder-platform && chmod 777 /tmp/coder-platform
+RUN mkdir -p /tmp/simplycode && chmod 777 /tmp/simplycode
 
 # Copy the built JAR
 COPY --from=builder /app/target/*.jar app.jar
@@ -64,6 +68,10 @@ EXPOSE 8080
 
 # Set environment variables
 ENV JAVA_OPTS="-Xmx512m -Xms256m"
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD curl -f http://localhost:8080/api/health || exit 1
 
 # Run the application
 ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar app.jar"]

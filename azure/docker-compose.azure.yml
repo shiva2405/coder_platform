@@ -1,0 +1,37 @@
+version: '3.8'
+
+# Azure Container Apps / Azure Container Instances optimized
+services:
+  simplycode-backend:
+    image: ${ACR_NAME}.azurecr.io/simplycode-backend:${TAG:-latest}
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=azure
+      - JAVA_OPTS=-Xmx2g -Xms512m -XX:+UseG1GC -XX:MaxGCPauseMillis=100
+      - EXECUTION_TIMEOUT=30000
+      - EXECUTION_MEMORY_LIMIT=134217728
+      - EXECUTION_MAX_OUTPUT_SIZE=65536
+      - EXECUTION_TEMP_DIR=/tmp/simplycode
+      - CORS_ALLOWED_ORIGINS=${CORS_ALLOWED_ORIGINS}
+      - LOG_LEVEL=INFO
+    volumes:
+      - simplycode-temp:/tmp/simplycode
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  simplycode-frontend:
+    image: ${ACR_NAME}.azurecr.io/simplycode-frontend:${TAG:-latest}
+    ports:
+      - "80:80"
+    depends_on:
+      - simplycode-backend
+    restart: unless-stopped
+
+volumes:
+  simplycode-temp:
