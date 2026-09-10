@@ -5,9 +5,11 @@ import { ExecutionResponse } from '../types';
 interface OutputPanelProps {
   result: ExecutionResponse | null;
   isLoading: boolean;
+  stdin: string;
+  onStdinChange: (value: string) => void;
 }
 
-const OutputPanel: React.FC<OutputPanelProps> = ({ result, isLoading }) => {
+const OutputPanel: React.FC<OutputPanelProps> = ({ result, isLoading, stdin, onStdinChange }) => {
   const getStatusIcon = () => {
     if (!result) return <Terminal className="w-5 h-5 text-gray-400" />;
     
@@ -82,6 +84,18 @@ const OutputPanel: React.FC<OutputPanelProps> = ({ result, isLoading }) => {
             Execution time: {result.executionTime}ms
           </span>
         )}
+      </div>
+
+      <div className="border-b border-editor-border px-4 py-2">
+        <label className="block text-xs uppercase tracking-wider text-gray-500 mb-2">
+          Standard Input
+        </label>
+        <textarea
+          value={stdin}
+          onChange={(event) => onStdinChange(event.target.value)}
+          placeholder="Optional stdin passed to the program"
+          className="w-full h-20 resize-y bg-black/30 text-gray-200 text-sm font-mono p-2 rounded-md border border-editor-border focus:outline-none focus:border-blue-500"
+        />
       </div>
 
       {/* Output Content */}

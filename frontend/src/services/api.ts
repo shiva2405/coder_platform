@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { ExecutionRequest, ExecutionResponse, Language } from '../types';
+import { ExecutionRequest, ExecutionResponse, Language, Snippet, SnippetRequest } from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
@@ -27,4 +27,19 @@ export const checkHealth = async (): Promise<boolean> => {
   } catch {
     return false;
   }
+};
+
+export const saveSnippet = async (request: SnippetRequest): Promise<Snippet> => {
+  const response = await api.post<Snippet>('/snippets', request);
+  return response.data;
+};
+
+export const getSnippet = async (slug: string): Promise<Snippet> => {
+  const response = await api.get<Snippet>(`/snippets/${slug}`);
+  return response.data;
+};
+
+export const forkSnippet = async (slug: string, request: SnippetRequest): Promise<Snippet> => {
+  const response = await api.post<Snippet>(`/snippets/${slug}/fork`, request);
+  return response.data;
 };

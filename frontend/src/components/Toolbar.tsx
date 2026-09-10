@@ -1,5 +1,6 @@
 import React from 'react';
-import { Play, Sun, Moon, RotateCcw, Settings } from 'lucide-react';
+import { Link } from 'react-router-dom';
+import { Play, Sun, Moon, RotateCcw, Share2, Check } from 'lucide-react';
 import { Language, EditorTheme } from '../types';
 import LanguageSelector from './LanguageSelector';
 
@@ -9,7 +10,12 @@ interface ToolbarProps {
   onLanguageSelect: (language: Language) => void;
   onRun: () => void;
   onReset: () => void;
+  onShare: () => void;
   isRunning: boolean;
+  isSharing: boolean;
+  shareCopied: boolean;
+  canShare: boolean;
+  shareLabel: string;
   theme: EditorTheme;
   onThemeToggle: () => void;
 }
@@ -20,7 +26,12 @@ const Toolbar: React.FC<ToolbarProps> = ({
   onLanguageSelect,
   onRun,
   onReset,
+  onShare,
   isRunning,
+  isSharing,
+  shareCopied,
+  canShare,
+  shareLabel,
   theme,
   onThemeToggle,
 }) => {
@@ -28,12 +39,12 @@ const Toolbar: React.FC<ToolbarProps> = ({
     <div className="flex items-center justify-between px-4 py-3 bg-editor-sidebar border-b border-editor-border">
       {/* Left section */}
       <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2">
+        <Link to="/" className="flex items-center gap-2 hover:opacity-90">
           <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
             <span className="text-white font-bold text-sm">&lt;/&gt;</span>
           </div>
           <span className="font-semibold text-lg">Coder Platform</span>
-        </div>
+        </Link>
 
         <div className="h-6 w-px bg-editor-border" />
 
@@ -53,6 +64,22 @@ const Toolbar: React.FC<ToolbarProps> = ({
         >
           <RotateCcw className="w-4 h-4" />
           <span className="hidden sm:inline">Reset</span>
+        </button>
+
+        <button
+          onClick={onShare}
+          disabled={!canShare || isSharing}
+          className={`flex items-center gap-2 px-3 py-2 rounded-md transition-colors ${
+            !canShare || isSharing
+              ? 'text-gray-500 cursor-not-allowed'
+              : shareCopied
+                ? 'text-green-400 bg-editor-border'
+                : 'text-gray-400 hover:text-white hover:bg-editor-border'
+          }`}
+          title={shareLabel}
+        >
+          {shareCopied ? <Check className="w-4 h-4" /> : <Share2 className="w-4 h-4" />}
+          <span className="hidden sm:inline">{isSharing ? 'Sharing...' : shareCopied ? 'Copied!' : shareLabel}</span>
         </button>
 
         <button

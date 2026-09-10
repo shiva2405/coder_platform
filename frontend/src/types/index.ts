@@ -11,6 +11,25 @@ export interface ExecutionRequest {
   stdin?: string;
 }
 
+export interface Snippet {
+  slug: string;
+  language: string;
+  code: string;
+  stdin: string;
+  title: string | null;
+  createdAt: string;
+  updatedAt: string;
+  viewCount: number;
+  forkedFrom: string | null;
+}
+
+export interface SnippetRequest {
+  language: string;
+  code: string;
+  stdin?: string;
+  title?: string;
+}
+
 export interface ExecutionResponse {
   output: string;
   error: string;

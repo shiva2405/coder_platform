@@ -43,8 +43,24 @@ kill_servers() {
     echo -e "${GREEN}All servers stopped.${NC}"
 }
 
+# Start PostgreSQL if Docker is available
+start_postgres() {
+    if ! command -v docker >/dev/null 2>&1; then
+        echo -e "${YELLOW}Docker not found. Make sure PostgreSQL is running on localhost:5432.${NC}"
+        return 0
+    fi
+
+    echo -e "${YELLOW}Starting PostgreSQL...${NC}"
+    if docker compose version >/dev/null 2>&1; then
+        docker compose -f "$PROJECT_DIR/docker-compose.yml" up -d postgres
+    else
+        docker-compose -f "$PROJECT_DIR/docker-compose.yml" up -d postgres
+    fi
+}
+
 # Function to start backend
 start_backend() {
+    start_postgres
     echo -e "${YELLOW}Starting backend...${NC}"
     cd "$PROJECT_DIR/backend"
     

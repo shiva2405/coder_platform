@@ -7,6 +7,8 @@ A full-stack code execution platform with a VS Code-like editor supporting 14 pr
 - **VS Code-like Editor**: Monaco Editor with syntax highlighting, auto-indentation, and IntelliSense
 - **14 Supported Languages**: Java, Python, JavaScript, TypeScript, C, C++, Go, Rust, Ruby, PHP, Kotlin, Swift, Perl, Bash
 - **Resource Limits**: Configurable timeout (default 30s) and memory limits (default 1MB)
+- **Save & Share**: Persist snippets in PostgreSQL and share them with a short URL
+- **Local Drafts**: Unsaved editor changes are restored after refresh
 - **Modern UI**: Dark/Light theme support, responsive design
 - **Docker Ready**: Complete Docker setup for easy deployment
 
@@ -15,14 +17,15 @@ A full-stack code execution platform with a VS Code-like editor supporting 14 pr
 ```
 ┌─────────────────────┐     ┌─────────────────────┐
 │   React Frontend    │────▶│  Spring Boot API    │
-│   (Monaco Editor)   │◀────│  (Code Execution)   │
+│   (Monaco Editor)   │◀────│  (Execute + Share)  │
 └─────────────────────┘     └─────────────────────┘
          │                           │
-         │                           ▼
-         │                  ┌─────────────────────┐
-         │                  │  Process Sandbox    │
-         │                  │  (All Compilers)    │
-         └─────────────────▶└─────────────────────┘
+         │                           ├───────────────┐
+         │                           ▼               ▼
+         │                  ┌─────────────────┐ ┌────────────┐
+         │                  │ Process Sandbox │ │ PostgreSQL │
+         │                  │ (Compilers)     │ │ Snippets   │
+         └─────────────────▶└─────────────────┘ └────────────┘
 ```
 
 ## Quick Start
@@ -43,6 +46,14 @@ docker-compose up --build
 ```
 
 ### Manual Development Setup
+
+#### PostgreSQL
+
+Local backend runs expect PostgreSQL on `localhost:5432` (database `coder_platform`, user/password `coder`). The easiest option is:
+
+```bash
+docker compose up -d postgres
+```
 
 #### Backend (Java Spring Boot)
 
@@ -101,6 +112,44 @@ Response:
 GET /api/languages
 ```
 
+### Save Snippet
+```http
+POST /api/snippets
+Content-Type: application/json
+
+{
+  "language": "python",
+  "code": "print(input())",
+  "stdin": "hello",
+  "title": "Optional title"
+}
+```
+
+Creates a new snippet and returns a short `slug`. Language must be one of the supported IDs. Code is limited to 256KB. Creation is limited to 20 snippets per hour per IP.
+
+### Load Snippet
+```http
+GET /api/snippets/{slug}
+```
+
+Increments the view count and returns language, code, stdin, title, timestamps, and view count.
+
+### Fork Snippet
+```http
+POST /api/snippets/{slug}/fork
+Content-Type: application/json
+
+{
+  "language": "python",
+  "code": "print('forked')",
+  "stdin": ""
+}
+```
+
+Always creates a **new** snippet. The original is never modified. Omitted fields are copied from the original.
+
+Shared links use `/s/{slug}` on the frontend.
+
 ### Health Check
 ```http
 GET /api/health
@@ -144,6 +193,9 @@ execution:
 | EXECUTION_MEMORY_LIMIT | Max memory (bytes) | 1048576 |
 | EXECUTION_MAX_OUTPUT_SIZE | Max output size (bytes) | 65536 |
 | CORS_ALLOWED_ORIGINS | Allowed CORS origins | http://localhost:3000 |
+| SPRING_DATASOURCE_URL | PostgreSQL JDBC URL | jdbc:postgresql://localhost:5432/coder_platform |
+| SPRING_DATASOURCE_USERNAME | PostgreSQL user | coder |
+| SPRING_DATASOURCE_PASSWORD | PostgreSQL password | coder |
 
 ## Project Structure
 
@@ -154,7 +206,9 @@ coder_platform-1/
 │   │   ├── config/            # Configuration classes
 │   │   ├── controller/        # REST controllers
 │   │   ├── model/             # Data models
+│   │   ├── repository/        # JPA repositories
 │   │   └── service/           # Business logic
+│   ├── src/main/resources/db/migration/
 │   └── pom.xml
 ├── frontend/                   # React frontend
 │   ├── src/
