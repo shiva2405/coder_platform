@@ -1,14 +1,15 @@
 import React from 'react';
-import { Link } from 'react-router-dom';
-import { Play, Sun, Moon, RotateCcw, Share2, Check } from 'lucide-react';
+import { Play, Square, Sun, Moon, RotateCcw, Share2, Check, History } from 'lucide-react';
 import { Language, EditorTheme } from '../types';
 import LanguageSelector from './LanguageSelector';
+import AppNav from './AppNav';
 
 interface ToolbarProps {
   languages: Language[];
   selectedLanguage: Language | null;
   onLanguageSelect: (language: Language) => void;
   onRun: () => void;
+  onStop: () => void;
   onReset: () => void;
   onShare: () => void;
   isRunning: boolean;
@@ -18,6 +19,8 @@ interface ToolbarProps {
   shareLabel: string;
   theme: EditorTheme;
   onThemeToggle: () => void;
+  historyOpen: boolean;
+  onToggleHistory: () => void;
 }
 
 const Toolbar: React.FC<ToolbarProps> = ({
@@ -25,6 +28,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
   selectedLanguage,
   onLanguageSelect,
   onRun,
+  onStop,
   onReset,
   onShare,
   isRunning,
@@ -34,17 +38,14 @@ const Toolbar: React.FC<ToolbarProps> = ({
   shareLabel,
   theme,
   onThemeToggle,
+  historyOpen,
+  onToggleHistory,
 }) => {
   return (
     <div className="flex items-center justify-between px-4 py-3 bg-editor-sidebar border-b border-editor-border">
       {/* Left section */}
       <div className="flex items-center gap-4">
-        <Link to="/" className="flex items-center gap-2 hover:opacity-90">
-          <div className="w-8 h-8 bg-gradient-to-br from-blue-500 to-purple-600 rounded-lg flex items-center justify-center">
-            <span className="text-white font-bold text-sm">&lt;/&gt;</span>
-          </div>
-          <span className="font-semibold text-lg">Coder Platform</span>
-        </Link>
+        <AppNav current="playground" />
 
         <div className="h-6 w-px bg-editor-border" />
 
@@ -57,6 +58,17 @@ const Toolbar: React.FC<ToolbarProps> = ({
 
       {/* Right section */}
       <div className="flex items-center gap-2">
+        <button
+          onClick={onToggleHistory}
+          className={`flex items-center gap-2 px-3 py-2 rounded-md transition-colors ${
+            historyOpen ? 'text-white bg-editor-border' : 'text-gray-400 hover:text-white hover:bg-editor-border'
+          }`}
+          title={historyOpen ? 'Hide run history' : 'Show run history'}
+        >
+          <History className="w-4 h-4" />
+          <span className="hidden sm:inline">History</span>
+        </button>
+
         <button
           onClick={onReset}
           className="flex items-center gap-2 px-3 py-2 text-gray-400 hover:text-white hover:bg-editor-border rounded-md transition-colors"
@@ -94,27 +106,30 @@ const Toolbar: React.FC<ToolbarProps> = ({
           )}
         </button>
 
-        <button
-          onClick={onRun}
-          disabled={isRunning || !selectedLanguage}
-          className={`flex items-center gap-2 px-4 py-2 rounded-md font-medium transition-colors ${
-            isRunning || !selectedLanguage
-              ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-              : 'bg-green-600 hover:bg-green-700 text-white'
-          }`}
-        >
-          {isRunning ? (
-            <>
-              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-              <span>Running...</span>
-            </>
-          ) : (
-            <>
-              <Play className="w-4 h-4" />
-              <span>Run</span>
-            </>
-          )}
-        </button>
+        {isRunning ? (
+          <button
+            onClick={onStop}
+            className="flex items-center gap-2 px-4 py-2 rounded-md font-medium transition-colors bg-red-600 hover:bg-red-700 text-white"
+            title="Stop the running program"
+          >
+            <Square className="w-4 h-4" />
+            <span>Stop</span>
+          </button>
+        ) : (
+          <button
+            onClick={onRun}
+            disabled={!selectedLanguage}
+            className={`flex items-center gap-2 px-4 py-2 rounded-md font-medium transition-colors ${
+              !selectedLanguage
+                ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                : 'bg-green-600 hover:bg-green-700 text-white'
+            }`}
+            title="Run the current program"
+          >
+            <Play className="w-4 h-4" />
+            <span>Run</span>
+          </button>
+        )}
       </div>
     </div>
   );

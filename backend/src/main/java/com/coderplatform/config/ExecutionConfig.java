@@ -10,6 +10,7 @@ public class ExecutionConfig {
     private long timeout = 30000;           // 30 seconds default
     private long memoryLimit = 1048576;     // 1MB default
     private long maxOutputSize = 65536;     // 64KB default
+    private int maxConcurrentLive = 32;
     private String tempDirectory = "/tmp/coder-platform";
     
     public long getTimeout() {
@@ -34,6 +35,14 @@ public class ExecutionConfig {
     
     public void setMaxOutputSize(long maxOutputSize) {
         this.maxOutputSize = maxOutputSize;
+    }
+
+    public int getMaxConcurrentLive() {
+        return maxConcurrentLive;
+    }
+
+    public void setMaxConcurrentLive(int maxConcurrentLive) {
+        this.maxConcurrentLive = maxConcurrentLive;
     }
     
     public String getTempDirectory() {

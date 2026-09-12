@@ -37,12 +37,17 @@ execution:
   timeout: 30000            # 30 seconds in milliseconds
   memory-limit: 134217728   # 128MB in bytes (enough for JVM languages to start)
   max-output-size: 65536    # 64KB output limit
+  max-concurrent-live: 32
   temp-directory: /tmp/coder-platform
+
+# Admin APIs (X-Admin-Key)
+admin:
+  api-key: ${ADMIN_API_KEY:dev-admin-key}
 
 # CORS configuration
 cors:
   allowed-origins: http://localhost:3000,http://localhost:5173
-  allowed-methods: GET,POST,OPTIONS
+  allowed-methods: GET,POST,PUT,DELETE,PATCH,OPTIONS
   allowed-headers: "*"
 
 logging:

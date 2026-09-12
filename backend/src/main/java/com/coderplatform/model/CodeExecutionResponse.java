@@ -8,6 +8,7 @@ public class CodeExecutionResponse {
         RUNTIME_ERROR,
         TIMEOUT,
         MEMORY_EXCEEDED,
+        STOPPED,
         ERROR
     }
 
@@ -46,6 +47,10 @@ public class CodeExecutionResponse {
     public static CodeExecutionResponse memoryExceeded(String output, long executionTime) {
         return new CodeExecutionResponse(output, "Memory limit exceeded. Your program used too much memory.", 
                                          executionTime, Status.MEMORY_EXCEEDED);
+    }
+
+    public static CodeExecutionResponse stopped(String output, String error, long executionTime) {
+        return new CodeExecutionResponse(output, error == null ? "" : error, executionTime, Status.STOPPED);
     }
 
     public static CodeExecutionResponse error(String error) {

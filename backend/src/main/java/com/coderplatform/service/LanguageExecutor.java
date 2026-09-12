@@ -92,6 +92,7 @@ public class LanguageExecutor {
 
             case PYTHON:
                 command.add("python3");
+                command.add("-u");
                 command.add(fileName);
                 break;
 

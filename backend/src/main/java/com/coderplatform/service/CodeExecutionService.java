@@ -29,89 +29,32 @@ public class CodeExecutionService {
     }
 
     public CodeExecutionResponse execute(CodeExecutionRequest request) {
-        long startTime = System.currentTimeMillis();
-        Path workDir = null;
-
-        try {
-            Language language = Language.fromId(request.getLanguage());
-            
-            // Create temporary working directory
-            workDir = Files.createTempDirectory("coder-");
-            File workDirFile = workDir.toFile();
-            
-            logger.info("Executing {} code in {}", language, workDir);
-
-            // Write source code to file
-            String fileName = languageExecutor.getDefaultFileName(language);
-            
-            // For Java, extract class name from code
-            if (language == Language.JAVA) {
-                fileName = extractJavaClassName(request.getCode()) + ".java";
+        try (PreparedProgram program = prepare(request.getLanguage(), request.getCode())) {
+            CompileResult compileResult = program.compile();
+            if (!compileResult.isSuccess()) {
+                return compileResult.getErrorResponse();
             }
-            
-            File sourceFile = new File(workDirFile, fileName);
-            Files.writeString(sourceFile.toPath(), request.getCode());
-
-            long compileTimeMs = 0;
-            
-            // Compile if necessary
-            if (language.isRequiresCompilation()) {
-                List<String> compileCmd = languageExecutor.getCompileCommand(language, sourceFile, workDirFile);
-                if (!compileCmd.isEmpty()) {
-                    ProcessResult compileResult = runProcess(compileCmd, workDirFile, null, config.getTimeout());
-                    compileTimeMs = compileResult.executionTimeMs;
-                    
-                    if (compileResult.exitCode != 0) {
-                        return CodeExecutionResponse.compileError(compileResult.stderr, compileTimeMs);
-                    }
-                    
-                    if (compileResult.timedOut) {
-                        return CodeExecutionResponse.timeout("Compilation timed out", compileTimeMs);
-                    }
-                }
-            }
-
-            // Run the code
-            List<String> runCmd = languageExecutor.getRunCommand(language, sourceFile, workDirFile, config.getMemoryLimit());
-            ProcessResult runResult = runProcess(runCmd, workDirFile, request.getStdin(), config.getTimeout());
-            
-            // Use actual process execution time (not wall clock including thread overhead)
-            long executionTime = runResult.executionTimeMs;
-
-            if (runResult.timedOut) {
-                return CodeExecutionResponse.timeout(truncateOutput(runResult.stdout), executionTime);
-            }
-
-            if (runResult.memoryExceeded) {
-                return CodeExecutionResponse.memoryExceeded(truncateOutput(runResult.stdout), executionTime);
-            }
-
-            if (runResult.exitCode != 0) {
-                return CodeExecutionResponse.runtimeError(
-                    truncateOutput(runResult.stdout), 
-                    runResult.stderr, 
-                    executionTime
-                );
-            }
-
-            return CodeExecutionResponse.success(truncateOutput(runResult.stdout), executionTime);
-
+            return program.run(request.getStdin(), config.getTimeout(), config.getMemoryLimit());
         } catch (IllegalArgumentException e) {
             logger.error("Invalid language: {}", e.getMessage());
             return CodeExecutionResponse.error("Unsupported language: " + request.getLanguage());
         } catch (Exception e) {
             logger.error("Execution error", e);
-            long executionTime = System.currentTimeMillis() - startTime;
             return CodeExecutionResponse.error("Execution failed: " + e.getMessage());
-        } finally {
-            // Cleanup
-            if (workDir != null) {
-                try {
-                    deleteDirectory(workDir.toFile());
-                } catch (Exception e) {
-                    logger.warn("Failed to cleanup work directory: {}", workDir, e);
-                }
-            }
+        }
+    }
+
+    /**
+     * Write source to a temp workspace and return a session that can compile once
+     * and then run many times against the same compiled output.
+     */
+    public PreparedProgram prepare(String languageId, String code) {
+        try {
+            return new ExecutionSession(languageId, code);
+        } catch (IllegalArgumentException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to prepare program: " + e.getMessage(), e);
         }
     }
 
@@ -130,13 +73,7 @@ public class CodeExecutionService {
     private ProcessResult runProcess(List<String> command, File workDir, String stdin, long timeoutMs) 
             throws IOException, InterruptedException {
         
-        ProcessBuilder pb = new ProcessBuilder(command);
-        pb.directory(workDir);
-        pb.redirectErrorStream(false);
-        
-        // Set environment variables for resource limits on Unix
-        Map<String, String> env = pb.environment();
-        env.put("LANG", "en_US.UTF-8");
+        ProcessBuilder pb = processBuilder(command, workDir);
         
         // Read stdout and stderr using dedicated threads with pre-allocated buffers
         StringBuilder stdout = new StringBuilder(4096);
@@ -216,6 +153,17 @@ public class CodeExecutionService {
         return new ProcessResult(exitCode, stdout.toString(), stderr.toString(), false, memoryExceeded, actualExecutionTimeMs);
     }
 
+    private static ProcessBuilder processBuilder(List<String> command, File workDir) {
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.directory(workDir);
+        pb.redirectErrorStream(false);
+        Map<String, String> env = pb.environment();
+        env.put("LANG", "en_US.UTF-8");
+        env.put("PYTHONUNBUFFERED", "1");
+        env.put("PYTHONIOENCODING", "UTF-8");
+        return pb;
+    }
+
     private String truncateOutput(String output) {
         if (output == null) return "";
         if (output.length() > config.getMaxOutputSize()) {
@@ -292,6 +240,122 @@ public class CodeExecutionService {
                 return "#!/bin/bash\necho \"Hello, World!\"";
             default:
                 return "// Hello World";
+        }
+    }
+
+    private final class ExecutionSession implements PreparedProgram {
+        private final Language language;
+        private final Path workDir;
+        private final File workDirFile;
+        private final File sourceFile;
+        private boolean compiled;
+        private boolean closed;
+
+        private ExecutionSession(String languageId, String code) throws IOException {
+            this.language = Language.fromId(languageId);
+            this.workDir = Files.createTempDirectory("coder-");
+            this.workDirFile = workDir.toFile();
+
+            String fileName = languageExecutor.getDefaultFileName(language);
+            if (language == Language.JAVA) {
+                fileName = extractJavaClassName(code) + ".java";
+            }
+            this.sourceFile = new File(workDirFile, fileName);
+            Files.writeString(sourceFile.toPath(), code);
+            logger.info("Prepared {} program in {}", language, workDir);
+        }
+
+        @Override
+        public CompileResult compile() {
+            ensureOpen();
+            try {
+                if (language.isRequiresCompilation()) {
+                    List<String> compileCmd = languageExecutor.getCompileCommand(language, sourceFile, workDirFile);
+                    if (!compileCmd.isEmpty()) {
+                        ProcessResult compileResult = runProcess(compileCmd, workDirFile, null, config.getTimeout());
+                        if (compileResult.timedOut) {
+                            return CompileResult.failure(
+                                    CodeExecutionResponse.timeout("Compilation timed out", compileResult.executionTimeMs)
+                            );
+                        }
+                        if (compileResult.exitCode != 0) {
+                            return CompileResult.failure(
+                                    CodeExecutionResponse.compileError(compileResult.stderr, compileResult.executionTimeMs)
+                            );
+                        }
+                    }
+                }
+                compiled = true;
+                return CompileResult.success();
+            } catch (Exception e) {
+                logger.error("Compilation error", e);
+                return CompileResult.failure(CodeExecutionResponse.error("Compilation failed: " + e.getMessage()));
+            }
+        }
+
+        @Override
+        public CodeExecutionResponse run(String stdin, long timeoutMs, long memoryLimitBytes) {
+            ensureOpen();
+            if (!compiled) {
+                throw new IllegalStateException("compile() must be called before run()");
+            }
+            try {
+                long runTimeout = timeoutMs > 0 ? timeoutMs : config.getTimeout();
+                long memoryLimit = memoryLimitBytes > 0 ? memoryLimitBytes : config.getMemoryLimit();
+                List<String> runCmd = languageExecutor.getRunCommand(language, sourceFile, workDirFile, memoryLimit);
+                ProcessResult runResult = runProcess(runCmd, workDirFile, stdin, runTimeout);
+                long executionTime = runResult.executionTimeMs;
+
+                if (runResult.timedOut) {
+                    return CodeExecutionResponse.timeout(truncateOutput(runResult.stdout), executionTime);
+                }
+                if (runResult.memoryExceeded) {
+                    return CodeExecutionResponse.memoryExceeded(truncateOutput(runResult.stdout), executionTime);
+                }
+                if (runResult.exitCode != 0) {
+                    return CodeExecutionResponse.runtimeError(
+                            truncateOutput(runResult.stdout),
+                            runResult.stderr,
+                            executionTime
+                    );
+                }
+                return CodeExecutionResponse.success(truncateOutput(runResult.stdout), executionTime);
+            } catch (Exception e) {
+                logger.error("Run error", e);
+                return CodeExecutionResponse.error("Execution failed: " + e.getMessage());
+            }
+        }
+
+        @Override
+        public StartedProcess start(long memoryLimitBytes) throws IOException {
+            ensureOpen();
+            if (!compiled) {
+                throw new IllegalStateException("compile() must be called before start()");
+            }
+            long memoryLimit = memoryLimitBytes > 0 ? memoryLimitBytes : config.getMemoryLimit();
+            List<String> runCmd = languageExecutor.getRunCommand(language, sourceFile, workDirFile, memoryLimit);
+            ProcessBuilder pb = processBuilder(runCmd, workDirFile);
+            long startedAt = System.nanoTime();
+            return new JvmStartedProcess(pb.start(), startedAt);
+        }
+
+        @Override
+        public void close() {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            try {
+                deleteDirectory(workDirFile);
+            } catch (Exception e) {
+                logger.warn("Failed to cleanup work directory: {}", workDir, e);
+            }
+        }
+
+        private void ensureOpen() {
+            if (closed) {
+                throw new IllegalStateException("Prepared program has already been closed");
+            }
         }
     }
 

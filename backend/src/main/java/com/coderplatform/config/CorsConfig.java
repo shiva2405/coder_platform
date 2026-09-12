@@ -18,7 +18,7 @@ public class CorsConfig implements WebMvcConfigurer {
     @Value("${cors.allowed-origins:http://localhost:3000}")
     private String allowedOrigins;
 
-    @Value("${cors.allowed-methods:GET,POST,OPTIONS}")
+    @Value("${cors.allowed-methods:GET,POST,PUT,DELETE,PATCH,OPTIONS}")
     private String allowedMethods;
 
     @Override

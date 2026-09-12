@@ -1,5 +1,15 @@
 import axios from 'axios';
-import { ExecutionRequest, ExecutionResponse, Language, Snippet, SnippetRequest } from '../types';
+import {
+  ExecutionRequest,
+  ExecutionResponse,
+  JudgeResult,
+  Language,
+  ProblemDetail,
+  ProblemSummary,
+  Snippet,
+  SnippetRequest,
+  SubmissionSummary,
+} from '../types';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
@@ -10,8 +20,11 @@ const api = axios.create({
   },
 });
 
-export const executeCode = async (request: ExecutionRequest): Promise<ExecutionResponse> => {
-  const response = await api.post<ExecutionResponse>('/execute', request);
+export const executeCode = async (
+  request: ExecutionRequest,
+  signal?: AbortSignal,
+): Promise<ExecutionResponse> => {
+  const response = await api.post<ExecutionResponse>('/execute', request, { signal });
   return response.data;
 };
 
@@ -41,5 +54,35 @@ export const getSnippet = async (slug: string): Promise<Snippet> => {
 
 export const forkSnippet = async (slug: string, request: SnippetRequest): Promise<Snippet> => {
   const response = await api.post<Snippet>(`/snippets/${slug}/fork`, request);
+  return response.data;
+};
+
+export const listProblems = async (): Promise<ProblemSummary[]> => {
+  const response = await api.get<ProblemSummary[]>('/problems');
+  return response.data;
+};
+
+export const getProblem = async (slug: string): Promise<ProblemDetail> => {
+  const response = await api.get<ProblemDetail>(`/problems/${slug}`);
+  return response.data;
+};
+
+export const runSamples = async (slug: string, language: string, code: string): Promise<JudgeResult> => {
+  const response = await api.post<JudgeResult>(`/problems/${slug}/run-samples`, { language, code });
+  return response.data;
+};
+
+export const submitSolution = async (slug: string, language: string, code: string): Promise<JudgeResult> => {
+  const response = await api.post<JudgeResult>(`/problems/${slug}/submissions`, { language, code });
+  return response.data;
+};
+
+export const listSubmissions = async (slug: string): Promise<SubmissionSummary[]> => {
+  const response = await api.get<SubmissionSummary[]>(`/problems/${slug}/submissions`);
+  return response.data;
+};
+
+export const getSubmission = async (id: number): Promise<JudgeResult> => {
+  const response = await api.get<JudgeResult>(`/submissions/${id}`);
   return response.data;
 };

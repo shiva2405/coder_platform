@@ -6,8 +6,11 @@ A full-stack code execution platform with a VS Code-like editor supporting 14 pr
 
 - **VS Code-like Editor**: Monaco Editor with syntax highlighting, auto-indentation, and IntelliSense
 - **14 Supported Languages**: Java, Python, JavaScript, TypeScript, C, C++, Go, Rust, Ruby, PHP, Kotlin, Swift, Perl, Bash
+- **Live Execution**: Stream stdout/stderr as the process runs, type stdin interactively, and stop a run immediately
 - **Resource Limits**: Configurable timeout (default 30s) and memory limits (default 1MB)
 - **Save & Share**: Persist snippets in PostgreSQL and share them with a short URL
+- **Problem Solving**: Problem statements, sample tests, and automated judging
+- **Compile-once Judge**: Compile submitted code once, then run every test case against the same binary
 - **Local Drafts**: Unsaved editor changes are restored after refresh
 - **Modern UI**: Dark/Light theme support, responsive design
 - **Docker Ready**: Complete Docker setup for easy deployment
@@ -17,14 +20,15 @@ A full-stack code execution platform with a VS Code-like editor supporting 14 pr
 ```
 ┌─────────────────────┐     ┌─────────────────────┐
 │   React Frontend    │────▶│  Spring Boot API    │
-│   (Monaco Editor)   │◀────│  (Execute + Share)  │
+│   (Monaco Editor)   │◀────│  (Execute + Judge)  │
 └─────────────────────┘     └─────────────────────┘
          │                           │
          │                           ├───────────────┐
          │                           ▼               ▼
          │                  ┌─────────────────┐ ┌────────────┐
          │                  │ Process Sandbox │ │ PostgreSQL │
-         │                  │ (Compilers)     │ │ Snippets   │
+         │                  │ (Compilers)     │ │ Snippets + │
+         │                  │                 │ │ Problems   │
          └─────────────────▶└─────────────────┘ └────────────┘
 ```
 
@@ -107,6 +111,34 @@ Response:
 }
 ```
 
+The buffered `POST /api/execute` endpoint remains available and is the playground fallback when a live session cannot be opened.
+
+### Live Execution
+```text
+WebSocket /ws/execute
+```
+
+Client messages:
+
+```json
+{"type":"start","language":"python","code":"print(input())","stdin":""}
+{"type":"stdin","data":"hello\\n"}
+{"type":"eof"}
+{"type":"stop"}
+```
+
+Server messages:
+
+```json
+{"type":"started","executionId":"..."}
+{"type":"stdout","data":"..."}
+{"type":"stderr","data":"..."}
+{"type":"done","status":"SUCCESS","executionTime":42,"output":"...","error":""}
+{"type":"error","message":"..."}
+```
+
+Active processes are tracked per WebSocket session and are killed when the program exits, the user sends `stop`, the time limit is hit, or the browser disconnects.
+
 ### Get Supported Languages
 ```http
 GET /api/languages
@@ -149,6 +181,70 @@ Content-Type: application/json
 Always creates a **new** snippet. The original is never modified. Omitted fields are copied from the original.
 
 Shared links use `/s/{slug}` on the frontend.
+
+### List Problems
+```http
+GET /api/problems
+```
+
+Returns title, difficulty, tags, limits, sample count, and total test count. Hidden test data is never included.
+
+### View Problem
+```http
+GET /api/problems/{slug}
+```
+
+Returns the statement, limits, and **sample** tests only. Hidden tests appear only as `hiddenTestCount`.
+
+### Run Samples
+```http
+POST /api/problems/{slug}/run-samples
+Content-Type: application/json
+
+{
+  "language": "python",
+  "code": "print(sum(map(int, input().split())))"
+}
+```
+
+Compiles once, then runs only sample tests. Failures include expected vs actual output.
+
+### Submit Solution
+```http
+POST /api/problems/{slug}/submissions
+Content-Type: application/json
+
+{
+  "language": "python",
+  "code": "print(sum(map(int, input().split())))"
+}
+```
+
+Compiles once, then runs every test case using the problem's time and memory limits. Stores language, code, verdict, runtime, and passed-count. Hidden case input/output is never returned.
+
+### Submission Results
+```http
+GET /api/problems/{slug}/submissions
+GET /api/submissions/{id}
+```
+
+### Admin Problem APIs
+Send `X-Admin-Key` (default local value `dev-admin-key`, override with `ADMIN_API_KEY`).
+
+```http
+GET    /api/admin/problems
+POST   /api/admin/problems
+GET    /api/admin/problems/{slug}
+PUT    /api/admin/problems/{slug}
+DELETE /api/admin/problems/{slug}
+POST   /api/admin/problems/{slug}/test-cases
+PUT    /api/admin/problems/{slug}/test-cases/{id}
+DELETE /api/admin/problems/{slug}/test-cases/{id}
+```
+
+Admin GET includes hidden test input and expected output. Public APIs never do.
+
+Starter problems: `a-plus-b`, `fizzbuzz`, `palindrome-string`, `maximum-of-n`.
 
 ### Health Check
 ```http
@@ -196,6 +292,7 @@ execution:
 | SPRING_DATASOURCE_URL | PostgreSQL JDBC URL | jdbc:postgresql://localhost:5432/coder_platform |
 | SPRING_DATASOURCE_USERNAME | PostgreSQL user | coder |
 | SPRING_DATASOURCE_PASSWORD | PostgreSQL password | coder |
+| ADMIN_API_KEY | Admin API key for problem management | dev-admin-key |
 
 ## Project Structure
 

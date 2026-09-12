@@ -24,6 +24,36 @@ public class GlobalExceptionHandler {
                 .body(new ApiErrorResponse("Snippet not found", HttpStatus.NOT_FOUND.value()));
     }
 
+    @ExceptionHandler(ProblemNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleProblemNotFound(ProblemNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ApiErrorResponse("Problem not found", HttpStatus.NOT_FOUND.value()));
+    }
+
+    @ExceptionHandler(SubmissionNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleSubmissionNotFound(SubmissionNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ApiErrorResponse("Submission not found", HttpStatus.NOT_FOUND.value()));
+    }
+
+    @ExceptionHandler(TestCaseNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleTestCaseNotFound(TestCaseNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ApiErrorResponse("Test case not found", HttpStatus.NOT_FOUND.value()));
+    }
+
+    @ExceptionHandler(InvalidProblemException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidProblem(InvalidProblemException ex) {
+        return ResponseEntity.badRequest()
+                .body(new ApiErrorResponse(ex.getMessage(), HttpStatus.BAD_REQUEST.value()));
+    }
+
+    @ExceptionHandler(UnauthorizedAdminException.class)
+    public ResponseEntity<ApiErrorResponse> handleUnauthorized(UnauthorizedAdminException ex) {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .body(new ApiErrorResponse("Unauthorized", HttpStatus.UNAUTHORIZED.value()));
+    }
+
     @ExceptionHandler(InvalidSnippetException.class)
     public ResponseEntity<ApiErrorResponse> handleInvalid(InvalidSnippetException ex) {
         return ResponseEntity.badRequest()

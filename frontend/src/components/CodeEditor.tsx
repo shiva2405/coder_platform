@@ -1,6 +1,7 @@
 import React from 'react';
 import Editor, { OnMount } from '@monaco-editor/react';
 import { EditorTheme } from '../types';
+import { getMonacoLanguage } from '../services/monacoLanguage';
 
 interface CodeEditorProps {
   code: string;
@@ -8,26 +9,6 @@ interface CodeEditorProps {
   language: string;
   theme: EditorTheme;
 }
-
-const getMonacoLanguage = (languageId: string): string => {
-  const languageMap: Record<string, string> = {
-    java: 'java',
-    python: 'python',
-    javascript: 'javascript',
-    typescript: 'typescript',
-    c: 'c',
-    cpp: 'cpp',
-    go: 'go',
-    rust: 'rust',
-    ruby: 'ruby',
-    php: 'php',
-    kotlin: 'kotlin',
-    swift: 'swift',
-    perl: 'perl',
-    bash: 'shell',
-  };
-  return languageMap[languageId] || 'plaintext';
-};
 
 const CodeEditor: React.FC<CodeEditorProps> = ({ code, onChange, language, theme }) => {
   const handleEditorDidMount: OnMount = (editor, monaco) => {

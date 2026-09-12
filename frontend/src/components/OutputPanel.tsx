@@ -1,18 +1,58 @@
-import React from 'react';
-import { Terminal, AlertCircle, CheckCircle, Clock, AlertTriangle } from 'lucide-react';
-import { ExecutionResponse } from '../types';
+import React, { useEffect, useRef, useState } from 'react';
+import { Terminal, AlertCircle, CheckCircle, Clock, AlertTriangle, RotateCcw, Send } from 'lucide-react';
+import { ExecutionResponse, RunHistoryEntry } from '../types';
+import { formatRunTimestamp } from '../services/runStatus';
 
 interface OutputPanelProps {
   result: ExecutionResponse | null;
   isLoading: boolean;
+  live: boolean;
+  liveOutput: string;
+  liveError: string;
   stdin: string;
   onStdinChange: (value: string) => void;
+  interactive: boolean;
+  inputClosed?: boolean;
+  onSendInput?: (line: string) => void;
+  onCloseInput?: () => void;
+  viewedRun?: RunHistoryEntry | null;
+  onRestoreRun?: () => void;
+  onShowLatest?: () => void;
 }
 
-const OutputPanel: React.FC<OutputPanelProps> = ({ result, isLoading, stdin, onStdinChange }) => {
+const OutputPanel: React.FC<OutputPanelProps> = ({
+  result,
+  isLoading,
+  live,
+  liveOutput,
+  liveError,
+  stdin,
+  onStdinChange,
+  interactive,
+  inputClosed = false,
+  onSendInput,
+  onCloseInput,
+  viewedRun = null,
+  onRestoreRun,
+  onShowLatest,
+}) => {
+  const outputRef = useRef<HTMLDivElement>(null);
+  const [inputLine, setInputLine] = useState('');
+
+  const displayOutput = live || isLoading ? liveOutput : result?.output || '';
+  const displayError = live || isLoading ? liveError : result?.error || '';
+  const showLive = live || isLoading;
+
+  useEffect(() => {
+    if (outputRef.current) {
+      outputRef.current.scrollTop = outputRef.current.scrollHeight;
+    }
+  }, [displayOutput, displayError, showLive]);
+
   const getStatusIcon = () => {
+    if (showLive) return <Terminal className="w-5 h-5 text-blue-400" />;
     if (!result) return <Terminal className="w-5 h-5 text-gray-400" />;
-    
+
     switch (result.status) {
       case 'SUCCESS':
         return <CheckCircle className="w-5 h-5 text-green-500" />;
@@ -24,14 +64,17 @@ const OutputPanel: React.FC<OutputPanelProps> = ({ result, isLoading, stdin, onS
         return <Clock className="w-5 h-5 text-yellow-500" />;
       case 'MEMORY_EXCEEDED':
         return <AlertTriangle className="w-5 h-5 text-orange-500" />;
+      case 'STOPPED':
+        return <AlertCircle className="w-5 h-5 text-gray-400" />;
       default:
         return <Terminal className="w-5 h-5 text-gray-400" />;
     }
   };
 
   const getStatusText = () => {
+    if (showLive) return live ? 'Running...' : 'Running (buffered)...';
     if (!result) return 'Output';
-    
+
     switch (result.status) {
       case 'SUCCESS':
         return 'Execution Successful';
@@ -43,6 +86,8 @@ const OutputPanel: React.FC<OutputPanelProps> = ({ result, isLoading, stdin, onS
         return 'Time Limit Exceeded';
       case 'MEMORY_EXCEEDED':
         return 'Memory Limit Exceeded';
+      case 'STOPPED':
+        return 'Stopped';
       case 'ERROR':
         return 'Error';
       default:
@@ -51,8 +96,9 @@ const OutputPanel: React.FC<OutputPanelProps> = ({ result, isLoading, stdin, onS
   };
 
   const getStatusColor = () => {
+    if (showLive) return 'text-blue-400';
     if (!result) return 'text-gray-400';
-    
+
     switch (result.status) {
       case 'SUCCESS':
         return 'text-green-500';
@@ -64,27 +110,66 @@ const OutputPanel: React.FC<OutputPanelProps> = ({ result, isLoading, stdin, onS
         return 'text-yellow-500';
       case 'MEMORY_EXCEEDED':
         return 'text-orange-500';
+      case 'STOPPED':
+        return 'text-gray-300';
       default:
         return 'text-gray-400';
     }
   };
 
+  const sendInput = () => {
+    if (!interactive || inputClosed || !onSendInput) {
+      return;
+    }
+    onSendInput(inputLine.endsWith('\n') ? inputLine : `${inputLine}\n`);
+    setInputLine('');
+  };
+
   return (
     <div className="h-full flex flex-col bg-editor-bg">
-      {/* Header */}
       <div className="flex items-center justify-between px-4 py-2 bg-editor-sidebar border-b border-editor-border">
         <div className="flex items-center gap-2">
           {getStatusIcon()}
           <span className={`font-medium ${getStatusColor()}`}>
-            {isLoading ? 'Running...' : getStatusText()}
+            {getStatusText()}
           </span>
         </div>
-        {result && (
+        {result && !showLive && (
           <span className="text-sm text-gray-400">
             Execution time: {result.executionTime}ms
           </span>
         )}
       </div>
+
+      {viewedRun && !showLive && (
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-editor-border bg-blue-950/40 px-4 py-2 text-xs text-blue-100">
+          <span>
+            Viewing run from {formatRunTimestamp(viewedRun.createdAt)}
+            {viewedRun.outputTruncated ? ' • output truncated to 500 characters' : ''}
+          </span>
+          <div className="flex items-center gap-2">
+            {onRestoreRun && (
+              <button
+                type="button"
+                onClick={onRestoreRun}
+                className="flex items-center gap-1 rounded-md bg-blue-600 px-2 py-1 text-white hover:bg-blue-700"
+              >
+                <RotateCcw className="h-3 w-3" />
+                Restore
+              </button>
+            )}
+            {onShowLatest && (
+              <button
+                type="button"
+                onClick={onShowLatest}
+                className="rounded-md px-2 py-1 text-blue-200 hover:bg-blue-900/70"
+              >
+                Latest
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="border-b border-editor-border px-4 py-2">
         <label className="block text-xs uppercase tracking-wider text-gray-500 mb-2">
@@ -93,45 +178,33 @@ const OutputPanel: React.FC<OutputPanelProps> = ({ result, isLoading, stdin, onS
         <textarea
           value={stdin}
           onChange={(event) => onStdinChange(event.target.value)}
-          placeholder="Optional stdin passed to the program"
-          className="w-full h-20 resize-y bg-black/30 text-gray-200 text-sm font-mono p-2 rounded-md border border-editor-border focus:outline-none focus:border-blue-500"
+          placeholder={interactive ? 'Sent when the program starts. Use the input box below while it is running.' : 'Optional stdin passed to the program'}
+          disabled={isLoading}
+          className="w-full h-20 resize-y bg-black/30 text-gray-200 text-sm font-mono p-2 rounded-md border border-editor-border focus:outline-none focus:border-blue-500 disabled:opacity-60"
         />
       </div>
 
-      {/* Output Content */}
-      <div className="flex-1 overflow-auto p-4">
-        {isLoading ? (
-          <div className="flex items-center justify-center h-full">
-            <div className="flex items-center gap-3">
-              <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-500"></div>
-              <span className="text-gray-400">Executing code...</span>
-            </div>
-          </div>
-        ) : result ? (
+      <div ref={outputRef} className="flex-1 overflow-auto p-4">
+        {showLive || result ? (
           <div className="font-mono text-sm">
-            {result.output && (
+            {(displayOutput || showLive || (result && !displayError)) && (
               <div className="mb-4">
                 <div className="text-green-400 mb-2 text-xs uppercase tracking-wider">
                   Standard Output
                 </div>
-                <pre className="whitespace-pre-wrap text-gray-200 bg-black/30 p-3 rounded-md overflow-x-auto">
-                  {result.output || '(No output)'}
+                <pre className="whitespace-pre-wrap text-gray-200 bg-black/30 p-3 rounded-md overflow-x-auto min-h-[3rem]">
+                  {displayOutput || (showLive ? 'Waiting for output...' : '(No output)')}
                 </pre>
               </div>
             )}
-            {result.error && (
+            {displayError && (
               <div>
                 <div className="text-red-400 mb-2 text-xs uppercase tracking-wider">
-                  {result.status === 'COMPILE_ERROR' ? 'Compilation Error' : 'Error Output'}
+                  {result?.status === 'COMPILE_ERROR' ? 'Compilation Error' : 'Error Output'}
                 </div>
                 <pre className="whitespace-pre-wrap text-red-300 bg-red-900/20 p-3 rounded-md overflow-x-auto">
-                  {result.error}
+                  {displayError}
                 </pre>
-              </div>
-            )}
-            {!result.output && !result.error && (
-              <div className="text-gray-500 italic">
-                Program executed successfully with no output.
               </div>
             )}
           </div>
@@ -140,12 +213,55 @@ const OutputPanel: React.FC<OutputPanelProps> = ({ result, isLoading, stdin, onS
             <Terminal className="w-12 h-12 mb-4 opacity-50" />
             <p>Run your code to see the output</p>
             <p className="text-sm mt-2 text-gray-600">
-              Press <kbd className="px-2 py-1 bg-editor-sidebar rounded">Ctrl</kbd> + 
+              Press <kbd className="px-2 py-1 bg-editor-sidebar rounded">Ctrl</kbd> +
               <kbd className="px-2 py-1 bg-editor-sidebar rounded ml-1">Enter</kbd> to run
             </p>
           </div>
         )}
       </div>
+
+      {interactive && (
+        <div className="border-t border-editor-border bg-editor-sidebar px-4 py-2">
+          <label className="block text-xs uppercase tracking-wider text-gray-500 mb-2">
+            Interactive input
+          </label>
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={inputLine}
+              onChange={(event) => setInputLine(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault();
+                  sendInput();
+                }
+              }}
+              disabled={inputClosed}
+              placeholder={inputClosed ? 'Standard input is closed' : 'Type a line and press Enter'}
+              className="flex-1 bg-black/30 text-gray-200 text-sm font-mono px-2 py-1.5 rounded-md border border-editor-border focus:outline-none focus:border-blue-500 disabled:opacity-60"
+            />
+            <button
+              type="button"
+              onClick={sendInput}
+              disabled={inputClosed}
+              className="flex items-center gap-1 rounded-md bg-blue-600 px-2 py-1.5 text-xs text-white hover:bg-blue-700 disabled:bg-gray-600 disabled:text-gray-400"
+            >
+              <Send className="h-3 w-3" />
+              Send
+            </button>
+            {onCloseInput && (
+              <button
+                type="button"
+                onClick={onCloseInput}
+                disabled={inputClosed}
+                className="rounded-md px-2 py-1.5 text-xs text-gray-300 hover:bg-editor-border disabled:opacity-50"
+              >
+                Close input
+              </button>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

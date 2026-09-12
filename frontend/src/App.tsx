@@ -2,11 +2,28 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Eye } from 'lucide-react';
 import CodeEditor from './components/CodeEditor';
+import ConfirmDialog from './components/ConfirmDialog';
+import HistorySidebar from './components/HistorySidebar';
 import OutputPanel from './components/OutputPanel';
+import RunDiffModal from './components/RunDiffModal';
 import Toolbar from './components/Toolbar';
-import { Language, ExecutionResponse, EditorTheme, Snippet } from './types';
+import { useRunHistory } from './hooks/useRunHistory';
+import { Language, ExecutionResponse, EditorTheme, Snippet, RunHistoryEntry } from './types';
 import { executeCode, forkSnippet, getLanguages, getSnippet, saveSnippet } from './services/api';
 import { draftsDiffer, loadDraft, saveDraft } from './services/draftStorage';
+import { LiveUnavailableError, LiveRunSession, startLiveRun } from './services/liveExecution';
+import { historyToResult } from './services/runHistoryStorage';
+
+const HISTORY_OPEN_KEY = 'coder-platform:history-open';
+
+function readHistoryOpen(): boolean {
+  try {
+    const raw = localStorage.getItem(HISTORY_OPEN_KEY);
+    return raw === null ? true : raw === 'true';
+  } catch {
+    return true;
+  }
+}
 
 const MAX_CODE_BYTES = 256 * 1024;
 
@@ -101,8 +118,30 @@ function App() {
   const [notice, setNotice] = useState<string | null>(null);
   const [originSnippet, setOriginSnippet] = useState<OriginSnippet | null>(null);
   const [ready, setReady] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(readHistoryOpen);
+  const [viewedRunId, setViewedRunId] = useState<string | null>(null);
+  const [compareIds, setCompareIds] = useState<string[]>([]);
+  const [languageFilter, setLanguageFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+  const [diffOpen, setDiffOpen] = useState(false);
+  const [pendingRestore, setPendingRestore] = useState<RunHistoryEntry | null>(null);
+  const [pendingClear, setPendingClear] = useState(false);
+  const [liveMode, setLiveMode] = useState(false);
+  const [liveOutput, setLiveOutput] = useState('');
+  const [liveError, setLiveError] = useState('');
+  const [inputClosed, setInputClosed] = useState(false);
   const loadedSlugRef = useRef<string | null>(null);
   const copyResetRef = useRef<number | undefined>(undefined);
+  const baselineRef = useRef<{ language: string; code: string; stdin: string } | null>(null);
+  const liveSessionRef = useRef<LiveRunSession | null>(null);
+  const restAbortRef = useRef<AbortController | null>(null);
+  const interactiveStdinRef = useRef('');
+  const runFinishedRef = useRef(false);
+  const { runs, error: historyError, recordRun, clearHistory } = useRunHistory();
+
+  const setBaseline = (language: string, nextCode: string, nextStdin: string) => {
+    baselineRef.current = { language, code: nextCode, stdin: nextStdin };
+  };
 
   const applyLanguage = useCallback((langs: Language[], languageId: string): Language | null => {
     return langs.find((language) => language.id === languageId) || langs[0] || null;
@@ -114,9 +153,11 @@ function App() {
       return;
     }
     setSelectedLanguage(defaultLang);
-    setCode(defaultLang.sampleCode || defaultSampleCodes[defaultLang.id] || '');
+    const nextCode = defaultLang.sampleCode || defaultSampleCodes[defaultLang.id] || '';
+    setCode(nextCode);
     setStdin('');
     setOriginSnippet(null);
+    setBaseline(defaultLang.id, nextCode, '');
   }, []);
 
   const applyDraft = useCallback((langs: Language[], languageId: string, nextCode: string, nextStdin: string) => {
@@ -126,6 +167,7 @@ function App() {
     }
     setCode(nextCode);
     setStdin(nextStdin);
+    setBaseline(languageId, nextCode, nextStdin);
   }, [applyLanguage]);
 
   const applySnippet = useCallback((langs: Language[], snippet: Snippet) => {
@@ -144,6 +186,7 @@ function App() {
       title: snippet.title,
     });
     loadedSlugRef.current = snippet.slug;
+    setBaseline(snippet.language, snippet.code, snippet.stdin || '');
   }, [applyLanguage]);
 
   useEffect(() => {
@@ -229,42 +272,190 @@ function App() {
     return () => window.clearTimeout(timer);
   }, [ready, selectedLanguage, code, stdin, routeSlug]);
 
-  const handleRun = useCallback(async () => {
-    if (!selectedLanguage || isRunning) return;
+  useEffect(() => {
+    try {
+      localStorage.setItem(HISTORY_OPEN_KEY, String(historyOpen));
+    } catch {
+      // Ignore quota / private-mode failures
+    }
+  }, [historyOpen]);
 
-    setIsRunning(true);
-    setResult(null);
-    setError(null);
+  useEffect(() => {
+    setCompareIds((ids) => {
+      const next = ids.filter((id) => runs.some((run) => run.id === id));
+      if (next.length === ids.length && next.every((id, index) => id === ids[index])) {
+        return ids;
+      }
+      return next;
+    });
+    if (viewedRunId && !runs.some((run) => run.id === viewedRunId)) {
+      setViewedRunId(null);
+    }
+  }, [runs, viewedRunId]);
 
+  const finishRun = useCallback(async (
+    response: ExecutionResponse,
+    runLanguage: string,
+    runCode: string,
+    runStdin: string,
+  ) => {
+    if (runFinishedRef.current) {
+      return;
+    }
+    runFinishedRef.current = true;
+    liveSessionRef.current = null;
+    restAbortRef.current = null;
+    setResult(response);
+    setLiveOutput(response.output || '');
+    setLiveError(response.error || '');
+    setIsRunning(false);
+    setLiveMode(false);
+    setInputClosed(true);
+    await recordRun({
+      language: runLanguage,
+      code: runCode,
+      stdin: runStdin,
+      status: response.status,
+      executionTime: response.executionTime,
+      output: response.output,
+      error: response.error,
+    });
+  }, [recordRun]);
+
+  const runBuffered = useCallback(async (
+    runLanguage: string,
+    runCode: string,
+    runStdin: string,
+    announceFallback: boolean,
+  ) => {
+    setLiveMode(false);
+    if (announceFallback) {
+      setNotice('Live execution unavailable. Using buffered run.');
+      if (copyResetRef.current) {
+        window.clearTimeout(copyResetRef.current);
+      }
+      copyResetRef.current = window.setTimeout(() => setNotice(null), 2500);
+    }
+    const controller = new AbortController();
+    restAbortRef.current = controller;
     try {
       const response = await executeCode({
-        language: selectedLanguage.id,
-        code,
-        stdin,
-      });
-      setResult(response);
+        language: runLanguage,
+        code: runCode,
+        stdin: runStdin,
+      }, controller.signal);
+      await finishRun(response, runLanguage, runCode, runStdin);
     } catch (err: any) {
+      if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError' || err?.name === 'AbortError') {
+        await finishRun({
+          output: '',
+          error: '',
+          executionTime: 0,
+          status: 'STOPPED',
+        }, runLanguage, runCode, runStdin);
+        return;
+      }
       console.error('Execution error:', err);
-      setResult({
+      await finishRun({
         output: '',
         error: err.response?.data?.error || err.message || 'Failed to execute code. Please try again.',
         executionTime: 0,
         status: 'ERROR',
-      });
-    } finally {
-      setIsRunning(false);
+      }, runLanguage, runCode, runStdin);
     }
-  }, [selectedLanguage, code, stdin, isRunning]);
+  }, [finishRun]);
+
+  const handleRun = useCallback(async () => {
+    if (!selectedLanguage || isRunning) return;
+
+    runFinishedRef.current = false;
+    interactiveStdinRef.current = '';
+    setIsRunning(true);
+    setResult(null);
+    setLiveOutput('');
+    setLiveError('');
+    setLiveMode(false);
+    setInputClosed(false);
+    setViewedRunId(null);
+    setError(null);
+
+    const runLanguage = selectedLanguage.id;
+    const runCode = code;
+    const runStdin = stdin;
+
+    try {
+      const session = await startLiveRun({
+        language: runLanguage,
+        code: runCode,
+        stdin: runStdin,
+      }, {
+        onStdout: (chunk) => setLiveOutput((current) => current + chunk),
+        onStderr: (chunk) => setLiveError((current) => current + chunk),
+        onDone: (response) => {
+          void finishRun(response, runLanguage, runCode, runStdin + interactiveStdinRef.current);
+        },
+        onError: (message) => {
+          void finishRun({
+            output: '',
+            error: message,
+            executionTime: 0,
+            status: 'ERROR',
+          }, runLanguage, runCode, runStdin + interactiveStdinRef.current);
+        },
+      });
+      if (runFinishedRef.current) {
+        session.close();
+        return;
+      }
+      liveSessionRef.current = session;
+      setLiveMode(true);
+    } catch (err) {
+      if (err instanceof LiveUnavailableError) {
+        await runBuffered(runLanguage, runCode, runStdin, true);
+        return;
+      }
+      console.error('Live execution error:', err);
+      await finishRun({
+        output: '',
+        error: err instanceof Error ? err.message : 'Failed to execute code. Please try again.',
+        executionTime: 0,
+        status: 'ERROR',
+      }, runLanguage, runCode, runStdin);
+    }
+  }, [selectedLanguage, code, stdin, isRunning, finishRun, runBuffered]);
+
+  const handleStop = useCallback(() => {
+    if (liveSessionRef.current) {
+      liveSessionRef.current.stop();
+      return;
+    }
+    if (restAbortRef.current) {
+      restAbortRef.current.abort();
+    }
+  }, []);
 
   useEffect(() => {
     const handleRunCode = () => {
-      if (!isRunning && selectedLanguage) {
-        handleRun();
+      if (isRunning) {
+        handleStop();
+      } else if (selectedLanguage) {
+        void handleRun();
       }
     };
     window.addEventListener('run-code', handleRunCode);
     return () => window.removeEventListener('run-code', handleRunCode);
-  }, [isRunning, selectedLanguage, handleRun]);
+  }, [isRunning, selectedLanguage, handleRun, handleStop]);
+
+  useEffect(() => {
+    const abandon = () => {
+      liveSessionRef.current?.close();
+    };
+    window.addEventListener('pagehide', abandon);
+    return () => {
+      window.removeEventListener('pagehide', abandon);
+      abandon();
+    };
+  }, []);
 
   const handleLanguageSelect = (language: Language) => {
     setSelectedLanguage(language);
@@ -287,15 +478,73 @@ function App() {
       setStdin(originSnippet.stdin);
       setResult(null);
       setError(null);
+      setBaseline(originSnippet.language, originSnippet.code, originSnippet.stdin);
       return;
     }
     if (selectedLanguage) {
-      setCode(selectedLanguage.sampleCode || defaultSampleCodes[selectedLanguage.id] || '');
+      const nextCode = selectedLanguage.sampleCode || defaultSampleCodes[selectedLanguage.id] || '';
+      setCode(nextCode);
       setStdin('');
       setResult(null);
       setError(null);
+      setBaseline(selectedLanguage.id, nextCode, '');
     }
   };
+
+  const isEditorDirty = () => {
+    const baseline = baselineRef.current;
+    if (!baseline || !selectedLanguage) {
+      return false;
+    }
+    return (
+      selectedLanguage.id !== baseline.language ||
+      code !== baseline.code ||
+      stdin !== baseline.stdin
+    );
+  };
+
+  const applyRestore = (run: RunHistoryEntry) => {
+    const language = applyLanguage(languages, run.language);
+    if (language) {
+      setSelectedLanguage(language);
+    }
+    setCode(run.code);
+    setStdin(run.stdin);
+    setResult(historyToResult(run));
+    setViewedRunId(null);
+    setError(null);
+    setBaseline(run.language, run.code, run.stdin);
+    setNotice('Restored code and stdin from the selected run.');
+    if (copyResetRef.current) {
+      window.clearTimeout(copyResetRef.current);
+    }
+    copyResetRef.current = window.setTimeout(() => setNotice(null), 2500);
+  };
+
+  const requestRestore = (run: RunHistoryEntry) => {
+    if (isEditorDirty()) {
+      setPendingRestore(run);
+      return;
+    }
+    applyRestore(run);
+  };
+
+  const handleToggleCompare = (id: string) => {
+    setCompareIds((prev) => {
+      if (prev.includes(id)) {
+        return prev.filter((value) => value !== id);
+      }
+      if (prev.length < 2) {
+        return [...prev, id];
+      }
+      return [prev[1], id];
+    });
+  };
+
+  const compareLeft = compareIds[0] ? runs.find((run) => run.id === compareIds[0]) : undefined;
+  const compareRight = compareIds[1] ? runs.find((run) => run.id === compareIds[1]) : undefined;
+  const viewedRun = viewedRunId ? runs.find((run) => run.id === viewedRunId) ?? null : null;
+  const displayResult = viewedRun ? historyToResult(viewedRun) : result;
 
   const handleThemeToggle = () => {
     setTheme((prev) => (prev === 'vs-dark' ? 'light' : 'vs-dark'));
@@ -393,6 +642,7 @@ function App() {
         selectedLanguage={selectedLanguage}
         onLanguageSelect={handleLanguageSelect}
         onRun={handleRun}
+        onStop={handleStop}
         onReset={handleReset}
         onShare={handleShare}
         isRunning={isRunning}
@@ -402,9 +652,41 @@ function App() {
         shareLabel={shareLabel}
         theme={theme}
         onThemeToggle={handleThemeToggle}
+        historyOpen={historyOpen}
+        onToggleHistory={() => setHistoryOpen((open) => !open)}
       />
 
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex overflow-hidden relative">
+        {historyOpen && (
+          <button
+            type="button"
+            className="absolute inset-y-0 left-72 right-0 z-20 bg-black/40 md:hidden"
+            aria-label="Close history"
+            onClick={() => setHistoryOpen(false)}
+          />
+        )}
+        <HistorySidebar
+          open={historyOpen}
+          runs={runs}
+          languages={languages}
+          error={historyError}
+          viewedRunId={viewedRunId}
+          compareIds={compareIds}
+          languageFilter={languageFilter}
+          statusFilter={statusFilter}
+          onLanguageFilter={setLanguageFilter}
+          onStatusFilter={setStatusFilter}
+          onSelectRun={(id) => setViewedRunId(id)}
+          onToggleCompare={handleToggleCompare}
+          onRestore={requestRestore}
+          onCompare={() => {
+            if (compareLeft && compareRight) {
+              setDiffOpen(true);
+            }
+          }}
+          onClear={() => setPendingClear(true)}
+          onClose={() => setHistoryOpen(false)}
+        />
         <div className="flex-1 flex flex-col border-r border-editor-border">
           <div className="px-4 py-2 bg-editor-sidebar border-b border-editor-border text-sm text-gray-400 flex items-center justify-between gap-3">
             {selectedLanguage ? (
@@ -438,20 +720,75 @@ function App() {
 
         <div className="w-1/3 min-w-[300px] max-w-[600px]">
           <OutputPanel
-            result={result}
+            result={displayResult}
             isLoading={isRunning}
+            live={liveMode}
+            liveOutput={liveOutput}
+            liveError={liveError}
             stdin={stdin}
             onStdinChange={setStdin}
+            interactive={isRunning && liveMode}
+            inputClosed={inputClosed}
+            onSendInput={(line) => {
+              interactiveStdinRef.current += line;
+              liveSessionRef.current?.sendStdin(line);
+            }}
+            onCloseInput={() => {
+              setInputClosed(true);
+              liveSessionRef.current?.closeStdin();
+            }}
+            viewedRun={viewedRun}
+            onRestoreRun={viewedRun ? () => requestRestore(viewedRun) : undefined}
+            onShowLatest={() => setViewedRunId(null)}
           />
         </div>
       </div>
+
+      {diffOpen && compareLeft && compareRight && (
+        <RunDiffModal
+          left={compareLeft}
+          right={compareRight}
+          theme={theme}
+          onClose={() => setDiffOpen(false)}
+        />
+      )}
+
+      <ConfirmDialog
+        open={pendingRestore !== null}
+        title="Restore this run?"
+        message="The editor has unsaved changes. Restore will replace the current code and stdin with the exact values from this run."
+        confirmLabel="Restore"
+        onConfirm={() => {
+          if (pendingRestore) {
+            applyRestore(pendingRestore);
+          }
+          setPendingRestore(null);
+        }}
+        onCancel={() => setPendingRestore(null)}
+      />
+
+      <ConfirmDialog
+        open={pendingClear}
+        title="Clear run history?"
+        message="This removes the latest 50 stored runs from this browser. This cannot be undone."
+        confirmLabel="Clear history"
+        danger
+        onConfirm={async () => {
+          await clearHistory();
+          setPendingClear(false);
+          setViewedRunId(null);
+          setCompareIds([]);
+          setDiffOpen(false);
+        }}
+        onCancel={() => setPendingClear(false)}
+      />
 
       <div className="px-4 py-2 bg-editor-sidebar border-t border-editor-border text-xs text-gray-500 flex justify-between">
         <span>
           Time Limit: 30s • Memory Limit: 128MB
         </span>
         <span>
-          Press Ctrl+Enter to run
+          Press Ctrl+Enter to run or stop
         </span>
       </div>
     </div>
