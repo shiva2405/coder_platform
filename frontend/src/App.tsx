@@ -1,17 +1,20 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Eye } from 'lucide-react';
+import { useAuth } from './auth/AuthProvider';
 import CodeEditor from './components/CodeEditor';
 import ConfirmDialog from './components/ConfirmDialog';
 import HistorySidebar from './components/HistorySidebar';
+import LoginModal from './components/LoginModal';
 import OutputPanel from './components/OutputPanel';
 import RunDiffModal from './components/RunDiffModal';
 import Toolbar from './components/Toolbar';
 import { useRunHistory } from './hooks/useRunHistory';
-import { Language, ExecutionResponse, EditorTheme, Snippet, RunHistoryEntry } from './types';
-import { executeCode, forkSnippet, getLanguages, getSnippet, saveSnippet } from './services/api';
+import { Language, ExecutionResponse, EditorTheme, QueueStatus, Snippet, RunHistoryEntry, SnippetVisibility } from './types';
+import { executeCode, forkSnippet, getLanguages, getSnippet, saveSnippet, updateSnippet } from './services/api';
 import { draftsDiffer, loadDraft, saveDraft } from './services/draftStorage';
 import { LiveUnavailableError, LiveRunSession, startLiveRun } from './services/liveExecution';
+import { RateLimitedError, rateLimitFromAxios } from './services/rateLimit';
 import { historyToResult } from './services/runHistoryStorage';
 
 const HISTORY_OPEN_KEY = 'coder-platform:history-open';
@@ -80,6 +83,8 @@ interface OriginSnippet {
   stdin: string;
   viewCount: number;
   title: string | null;
+  visibility: SnippetVisibility;
+  ownedByMe: boolean;
 }
 
 function utf8ByteLength(value: string): number {
@@ -105,6 +110,7 @@ async function copyText(text: string): Promise<void> {
 function App() {
   const { slug: routeSlug } = useParams<{ slug?: string }>();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [languages, setLanguages] = useState<Language[]>([]);
   const [selectedLanguage, setSelectedLanguage] = useState<Language | null>(null);
   const [code, setCode] = useState<string>('');
@@ -126,10 +132,14 @@ function App() {
   const [diffOpen, setDiffOpen] = useState(false);
   const [pendingRestore, setPendingRestore] = useState<RunHistoryEntry | null>(null);
   const [pendingClear, setPendingClear] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(false);
   const [liveMode, setLiveMode] = useState(false);
   const [liveOutput, setLiveOutput] = useState('');
   const [liveError, setLiveError] = useState('');
   const [inputClosed, setInputClosed] = useState(false);
+  const [queue, setQueue] = useState<QueueStatus | null>(null);
+  const [cooldownUntil, setCooldownUntil] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
   const loadedSlugRef = useRef<string | null>(null);
   const copyResetRef = useRef<number | undefined>(undefined);
   const baselineRef = useRef<{ language: string; code: string; stdin: string } | null>(null);
@@ -184,6 +194,8 @@ function App() {
       stdin: snippet.stdin || '',
       viewCount: snippet.viewCount,
       title: snippet.title,
+      visibility: snippet.visibility || 'PUBLIC',
+      ownedByMe: Boolean(snippet.ownedByMe),
     });
     loadedSlugRef.current = snippet.slug;
     setBaseline(snippet.language, snippet.code, snippet.stdin || '');
@@ -293,6 +305,24 @@ function App() {
     }
   }, [runs, viewedRunId]);
 
+  const applyRateLimit = useCallback((error: unknown) => {
+    const limited = error instanceof RateLimitedError ? error : rateLimitFromAxios(error);
+    if (!limited) {
+      return null;
+    }
+    setCooldownUntil(Date.now() + limited.retryAfterSeconds * 1000);
+    setError(limited.message);
+    return limited;
+  }, []);
+
+  useEffect(() => {
+    if (cooldownUntil <= Date.now()) {
+      return;
+    }
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [cooldownUntil]);
+
   const finishRun = useCallback(async (
     response: ExecutionResponse,
     runLanguage: string,
@@ -305,6 +335,7 @@ function App() {
     runFinishedRef.current = true;
     liveSessionRef.current = null;
     restAbortRef.current = null;
+    setQueue(null);
     setResult(response);
     setLiveOutput(response.output || '');
     setLiveError(response.error || '');
@@ -343,7 +374,7 @@ function App() {
         language: runLanguage,
         code: runCode,
         stdin: runStdin,
-      }, controller.signal);
+      }, controller.signal, setQueue);
       await finishRun(response, runLanguage, runCode, runStdin);
     } catch (err: any) {
       if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError' || err?.name === 'AbortError') {
@@ -355,18 +386,23 @@ function App() {
         }, runLanguage, runCode, runStdin);
         return;
       }
+      const limited = applyRateLimit(err);
       console.error('Execution error:', err);
       await finishRun({
         output: '',
-        error: err.response?.data?.error || err.message || 'Failed to execute code. Please try again.',
+        error: limited?.message || err.response?.data?.error || err.message || 'Failed to execute code. Please try again.',
         executionTime: 0,
         status: 'ERROR',
       }, runLanguage, runCode, runStdin);
     }
-  }, [finishRun]);
+  }, [applyRateLimit, finishRun]);
 
   const handleRun = useCallback(async () => {
     if (!selectedLanguage || isRunning) return;
+
+    if (cooldownUntil > Date.now()) {
+      return;
+    }
 
     runFinishedRef.current = false;
     interactiveStdinRef.current = '';
@@ -378,6 +414,7 @@ function App() {
     setInputClosed(false);
     setViewedRunId(null);
     setError(null);
+    setQueue(null);
 
     const runLanguage = selectedLanguage.id;
     const runCode = code;
@@ -389,6 +426,8 @@ function App() {
         code: runCode,
         stdin: runStdin,
       }, {
+        onQueued: setQueue,
+        onStarted: () => setQueue(null),
         onStdout: (chunk) => setLiveOutput((current) => current + chunk),
         onStderr: (chunk) => setLiveError((current) => current + chunk),
         onDone: (response) => {
@@ -414,6 +453,16 @@ function App() {
         await runBuffered(runLanguage, runCode, runStdin, true);
         return;
       }
+      const limited = applyRateLimit(err);
+      if (limited) {
+        await finishRun({
+          output: '',
+          error: limited.message,
+          executionTime: 0,
+          status: 'ERROR',
+        }, runLanguage, runCode, runStdin);
+        return;
+      }
       console.error('Live execution error:', err);
       await finishRun({
         output: '',
@@ -422,7 +471,7 @@ function App() {
         status: 'ERROR',
       }, runLanguage, runCode, runStdin);
     }
-  }, [selectedLanguage, code, stdin, isRunning, finishRun, runBuffered]);
+  }, [selectedLanguage, code, stdin, isRunning, cooldownUntil, finishRun, runBuffered, applyRateLimit]);
 
   const handleStop = useCallback(() => {
     if (liveSessionRef.current) {
@@ -592,6 +641,11 @@ function App() {
       return;
     }
 
+    if (!user) {
+      setLoginOpen(true);
+      return;
+    }
+
     setIsSharing(true);
     setError(null);
     try {
@@ -600,20 +654,33 @@ function App() {
         code,
         stdin,
       };
-      const saved = originSnippet
-        ? await forkSnippet(originSnippet.slug, payload)
-        : await saveSnippet(payload);
+      let saved: Snippet;
+      if (originSnippet?.ownedByMe) {
+        saved = await updateSnippet(originSnippet.slug, payload);
+      } else if (originSnippet) {
+        saved = await forkSnippet(originSnippet.slug, payload);
+      } else {
+        saved = await saveSnippet(payload);
+      }
 
       applySnippet(languages, saved);
       navigate(`/s/${saved.slug}`, { replace: true });
       await copyText(shareUrlFor(saved.slug));
-      markCopied(originSnippet ? 'Forked and copied a new share link.' : 'Snippet saved. Link copied.');
+      markCopied(
+        originSnippet?.ownedByMe
+          ? 'Saved. Link copied.'
+          : originSnippet
+            ? 'Forked and copied a new share link.'
+            : 'Snippet saved. Link copied.',
+      );
     } catch (err: any) {
       console.error('Share failed:', err);
       const status = err.response?.status;
       const serverError = err.response?.data?.error;
-      if (status === 429) {
-        setError(serverError || 'Snippet creation is limited to 20 per hour. Try again later.');
+      if (status === 401) {
+        setLoginOpen(true);
+      } else if (applyRateLimit(err)) {
+        // countdown is shown on the run button; banner uses the server message
       } else {
         setError(serverError || err.message || 'Failed to save snippet. Please try again.');
       }
@@ -622,7 +689,9 @@ function App() {
     }
   };
 
-  const shareLabel = originSnippet && isDirty ? 'Fork & Share' : 'Share';
+  const shareLabel = originSnippet && isDirty
+    ? (originSnippet.ownedByMe ? 'Save' : 'Fork & Share')
+    : 'Share';
 
   return (
     <div className={`h-screen flex flex-col ${theme === 'light' ? 'bg-white' : 'bg-editor-bg'}`}>
@@ -654,6 +723,7 @@ function App() {
         onThemeToggle={handleThemeToggle}
         historyOpen={historyOpen}
         onToggleHistory={() => setHistoryOpen((open) => !open)}
+        cooldownSeconds={Math.max(0, Math.ceil((cooldownUntil - now) / 1000))}
       />
 
       <div className="flex-1 flex overflow-hidden relative">
@@ -693,7 +763,7 @@ function App() {
               <span>
                 {selectedLanguage.name} • {selectedLanguage.extension}
                 {originSnippet?.title ? ` • ${originSnippet.title}` : ''}
-                {isDirty ? ' • unsaved fork' : ''}
+                {isDirty ? (originSnippet?.ownedByMe ? ' • unsaved' : ' • unsaved fork') : ''}
               </span>
             ) : (
               <span>Select a language to start coding</span>
@@ -701,6 +771,7 @@ function App() {
             {originSnippet && (
               <span className="flex items-center gap-3 text-xs">
                 <span className="font-mono text-gray-500">/s/{originSnippet.slug}</span>
+                <span className="uppercase tracking-wide text-gray-500">{originSnippet.visibility}</span>
                 <span className="flex items-center gap-1">
                   <Eye className="w-3.5 h-3.5" />
                   {originSnippet.viewCount}
@@ -725,6 +796,7 @@ function App() {
             live={liveMode}
             liveOutput={liveOutput}
             liveError={liveError}
+            queue={queue}
             stdin={stdin}
             onStdinChange={setStdin}
             interactive={isRunning && liveMode}
@@ -765,6 +837,12 @@ function App() {
           setPendingRestore(null);
         }}
         onCancel={() => setPendingRestore(null)}
+      />
+
+      <LoginModal
+        open={loginOpen}
+        nextPath={window.location.pathname}
+        onClose={() => setLoginOpen(false)}
       />
 
       <ConfirmDialog

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Clock, Database } from 'lucide-react';
 import AppNav from '../components/AppNav';
+import UserMenu from '../components/UserMenu';
 import { listProblems } from '../services/api';
 import { Difficulty, ProblemSummary } from '../types';
 
@@ -38,6 +39,7 @@ export default function ProblemListPage() {
     <div className="h-full overflow-y-auto bg-editor-bg text-gray-200">
       <header className="sticky top-0 z-10 flex items-center justify-between px-4 py-3 bg-editor-sidebar border-b border-editor-border">
         <AppNav current="problems" />
+        <UserMenu />
       </header>
 
       <main className="max-w-5xl mx-auto px-4 py-8">

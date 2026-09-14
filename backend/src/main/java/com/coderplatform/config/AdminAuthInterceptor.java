@@ -1,6 +1,8 @@
 package com.coderplatform.config;
 
+import com.coderplatform.auth.AuthContext;
 import com.coderplatform.exception.UnauthorizedAdminException;
+import com.coderplatform.model.User;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import org.springframework.stereotype.Component;
@@ -22,9 +24,13 @@ public class AdminAuthInterceptor implements HandlerInterceptor {
         if ("OPTIONS".equalsIgnoreCase(request.getMethod())) {
             return true;
         }
-        if (!adminConfig.matches(request.getHeader(HEADER))) {
-            throw new UnauthorizedAdminException();
+        if (adminConfig.matches(request.getHeader(HEADER))) {
+            return true;
         }
-        return true;
+        User user = AuthContext.getUser();
+        if (user != null && user.isAdmin()) {
+            return true;
+        }
+        throw new UnauthorizedAdminException();
     }
 }

@@ -65,8 +65,34 @@ make_request() {
     local exec_time="N/A"
     local status="UNKNOWN"
     if [ "$HAS_JQ" = true ] && [ -n "$body" ]; then
-        exec_time=$(echo "$body" | jq -r '.executionTime // "N/A"' 2>/dev/null)
-        status=$(echo "$body" | jq -r '.status // "UNKNOWN"' 2>/dev/null)
+        local state
+        state=$(echo "$body" | jq -r '.state // empty' 2>/dev/null)
+        if [ "$http_code" = "202" ] && [ -n "$state" ]; then
+            local job_id
+            job_id=$(echo "$body" | jq -r '.id // empty' 2>/dev/null)
+            local jobs_url
+            jobs_url="${API_URL%/execute}/jobs/${job_id}"
+            local poll
+            for _ in $(seq 1 40); do
+                poll=$(curl -s "$jobs_url" 2>/dev/null)
+                state=$(echo "$poll" | jq -r '.state // empty' 2>/dev/null)
+                if [ "$state" = "COMPLETED" ]; then
+                    http_code="200"
+                    exec_time=$(echo "$poll" | jq -r '.result.executionTime // "N/A"' 2>/dev/null)
+                    status=$(echo "$poll" | jq -r '.result.status // "UNKNOWN"' 2>/dev/null)
+                    break
+                fi
+                if [ "$state" = "REJECTED" ] || [ "$state" = "QUEUE_TIMEOUT" ]; then
+                    http_code="429"
+                    status="$state"
+                    break
+                fi
+                sleep 0.15
+            done
+        else
+            exec_time=$(echo "$body" | jq -r '.executionTime // .result.executionTime // "N/A"' 2>/dev/null)
+            status=$(echo "$body" | jq -r '.status // .result.status // .reason // "UNKNOWN"' 2>/dev/null)
+        fi
     fi
     
     echo "$request_id,$http_code,$curl_time,$exec_time,$status"
@@ -104,6 +130,8 @@ run_concurrent_batch() {
     while IFS=',' read -r req_id http_code curl_time exec_time status; do
         if [ "$http_code" = "200" ] && [ "$status" = "SUCCESS" ]; then
             ((success++))
+        elif [ "$http_code" = "429" ]; then
+            ((failed++))
         else
             ((failed++))
         fi

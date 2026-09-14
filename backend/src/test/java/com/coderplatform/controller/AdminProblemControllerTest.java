@@ -54,6 +54,29 @@ class AdminProblemControllerTest {
     }
 
     @Test
+    void allowsSignedInAdminWithoutApiKey() throws Exception {
+        com.coderplatform.model.User admin = new com.coderplatform.model.User();
+        admin.setId(1L);
+        admin.setEmail("admin@localhost");
+        admin.setName("Admin");
+        admin.setRole(com.coderplatform.model.UserRole.ADMIN);
+        com.coderplatform.auth.AuthContext.set(admin, "token");
+        try {
+            AdminProblemResponse response = new AdminProblemResponse();
+            response.setSlug("a-plus-b");
+            response.setTitle("A + B");
+            response.setDifficulty(Difficulty.EASY);
+            when(problemService.getAdminProblem("a-plus-b")).thenReturn(response);
+
+            mockMvc.perform(get("/api/admin/problems/a-plus-b"))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.slug").value("a-plus-b"));
+        } finally {
+            com.coderplatform.auth.AuthContext.clear();
+        }
+    }
+
+    @Test
     void returnsHiddenTestsWhenAuthorized() throws Exception {
         AdminProblemResponse response = new AdminProblemResponse();
         response.setSlug("a-plus-b");

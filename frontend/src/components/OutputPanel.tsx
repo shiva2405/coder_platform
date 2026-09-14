@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Terminal, AlertCircle, CheckCircle, Clock, AlertTriangle, RotateCcw, Send } from 'lucide-react';
-import { ExecutionResponse, RunHistoryEntry } from '../types';
+import { ExecutionResponse, QueueStatus, RunHistoryEntry } from '../types';
+import { formatWait } from '../services/rateLimit';
 import { formatRunTimestamp } from '../services/runStatus';
 
 interface OutputPanelProps {
@@ -9,6 +10,7 @@ interface OutputPanelProps {
   live: boolean;
   liveOutput: string;
   liveError: string;
+  queue?: QueueStatus | null;
   stdin: string;
   onStdinChange: (value: string) => void;
   interactive: boolean;
@@ -26,6 +28,7 @@ const OutputPanel: React.FC<OutputPanelProps> = ({
   live,
   liveOutput,
   liveError,
+  queue = null,
   stdin,
   onStdinChange,
   interactive,
@@ -49,7 +52,10 @@ const OutputPanel: React.FC<OutputPanelProps> = ({
     }
   }, [displayOutput, displayError, showLive]);
 
+  const queued = Boolean(queue && queue.position > 0);
+
   const getStatusIcon = () => {
+    if (queued) return <Clock className="w-5 h-5 text-amber-400" />;
     if (showLive) return <Terminal className="w-5 h-5 text-blue-400" />;
     if (!result) return <Terminal className="w-5 h-5 text-gray-400" />;
 
@@ -72,6 +78,9 @@ const OutputPanel: React.FC<OutputPanelProps> = ({
   };
 
   const getStatusText = () => {
+    if (queued && queue) {
+      return `Queued — position ${queue.position} · about ${formatWait(queue.estimatedWaitMs)}`;
+    }
     if (showLive) return live ? 'Running...' : 'Running (buffered)...';
     if (!result) return 'Output';
 
@@ -96,6 +105,7 @@ const OutputPanel: React.FC<OutputPanelProps> = ({
   };
 
   const getStatusColor = () => {
+    if (queued) return 'text-amber-300';
     if (showLive) return 'text-blue-400';
     if (!result) return 'text-gray-400';
 
@@ -193,7 +203,7 @@ const OutputPanel: React.FC<OutputPanelProps> = ({
                   Standard Output
                 </div>
                 <pre className="whitespace-pre-wrap text-gray-200 bg-black/30 p-3 rounded-md overflow-x-auto min-h-[3rem]">
-                  {displayOutput || (showLive ? 'Waiting for output...' : '(No output)')}
+                  {displayOutput || (queued ? 'Waiting for an execution slot...' : showLive ? 'Waiting for output...' : '(No output)')}
                 </pre>
               </div>
             )}

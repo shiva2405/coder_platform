@@ -19,16 +19,25 @@ public class SnippetRateLimiter {
         this.config = config;
     }
 
-    public boolean tryAcquire(String ip) {
-        return tryAcquire(ip, System.currentTimeMillis());
+    public boolean tryAcquire(String key) {
+        return tryAcquire(key, config.getRateLimitPerHour(), System.currentTimeMillis());
+    }
+
+    public boolean tryAcquire(String key, int limit) {
+        return tryAcquire(key, limit, System.currentTimeMillis());
     }
 
     boolean tryAcquire(String ip, long nowMillis) {
+        return tryAcquire(ip, config.getRateLimitPerHour(), nowMillis);
+    }
+
+    boolean tryAcquire(String key, int limit, long nowMillis) {
+        int allowed = Math.max(1, limit);
         long cutoff = nowMillis - WINDOW.toMillis();
-        ConcurrentLinkedDeque<Long> times = hits.computeIfAbsent(ip, key -> new ConcurrentLinkedDeque<>());
+        ConcurrentLinkedDeque<Long> times = hits.computeIfAbsent(key, ignored -> new ConcurrentLinkedDeque<>());
         synchronized (times) {
             prune(times, cutoff);
-            if (times.size() >= config.getRateLimitPerHour()) {
+            if (times.size() >= allowed) {
                 return false;
             }
             times.addLast(nowMillis);
@@ -36,8 +45,8 @@ public class SnippetRateLimiter {
         }
     }
 
-    public long retryAfterSeconds(String ip) {
-        return retryAfterSeconds(ip, System.currentTimeMillis());
+    public long retryAfterSeconds(String key) {
+        return retryAfterSeconds(key, System.currentTimeMillis());
     }
 
     long retryAfterSeconds(String ip, long nowMillis) {

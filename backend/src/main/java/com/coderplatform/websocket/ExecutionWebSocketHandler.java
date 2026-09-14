@@ -1,8 +1,13 @@
 package com.coderplatform.websocket;
 
+import com.coderplatform.auth.AuthContext;
+import com.coderplatform.exception.RateLimitExceededException;
 import com.coderplatform.model.CodeExecutionResponse;
 import com.coderplatform.model.LiveClientMessage;
 import com.coderplatform.model.LiveServerMessage;
+import com.coderplatform.model.User;
+import com.coderplatform.service.ClientKey;
+import com.coderplatform.service.ExecutionQuotaService;
 import com.coderplatform.service.LiveExecutionListener;
 import com.coderplatform.service.LiveExecutionService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -23,10 +28,16 @@ public class ExecutionWebSocketHandler extends TextWebSocketHandler {
 
     private final LiveExecutionService liveExecutionService;
     private final ObjectMapper objectMapper;
+    private final ExecutionQuotaService quotaService;
 
-    public ExecutionWebSocketHandler(LiveExecutionService liveExecutionService, ObjectMapper objectMapper) {
+    public ExecutionWebSocketHandler(
+            LiveExecutionService liveExecutionService,
+            ObjectMapper objectMapper,
+            ExecutionQuotaService quotaService
+    ) {
         this.liveExecutionService = liveExecutionService;
         this.objectMapper = objectMapper;
+        this.quotaService = quotaService;
     }
 
     @Override
@@ -53,6 +64,8 @@ public class ExecutionWebSocketHandler extends TextWebSocketHandler {
                 case "stop" -> liveExecutionService.stopOwner(session.getId());
                 default -> send(session, LiveServerMessage.error("Unknown message type"));
             }
+        } catch (RateLimitExceededException e) {
+            send(session, LiveServerMessage.rejected(e.getMessage(), e.getRetryAfterSeconds(), e.getReason()));
         } catch (IllegalArgumentException | IllegalStateException e) {
             send(session, LiveServerMessage.error(e.getMessage()));
         } catch (IOException e) {
@@ -76,11 +89,18 @@ public class ExecutionWebSocketHandler extends TextWebSocketHandler {
     }
 
     private void handleStart(WebSocketSession session, LiveClientMessage message) {
+        User user = (User) session.getAttributes().get(AuthContext.USER_ATTR);
+        String ip = (String) session.getAttributes().get(AuthContext.CLIENT_IP_ATTR);
+        if (ip == null || ip.isBlank()) {
+            ip = "unknown";
+        }
+        quotaService.consume(user, ip);
         liveExecutionService.start(
                 session.getId(),
                 message.getLanguage(),
                 message.getCode(),
                 message.getStdin(),
+                ClientKey.of(user, ip),
                 new SocketListener(session)
         );
     }
@@ -109,6 +129,11 @@ public class ExecutionWebSocketHandler extends TextWebSocketHandler {
         }
 
         @Override
+        public void onQueued(String executionId, int position, long estimatedWaitMs) {
+            send(session, LiveServerMessage.queued(executionId, position, estimatedWaitMs));
+        }
+
+        @Override
         public void onStarted(String executionId) {
             send(session, LiveServerMessage.started(executionId));
         }
@@ -126,6 +151,11 @@ public class ExecutionWebSocketHandler extends TextWebSocketHandler {
         @Override
         public void onCompleted(CodeExecutionResponse result) {
             send(session, LiveServerMessage.done(result));
+        }
+
+        @Override
+        public void onRejected(String message, long retryAfterSeconds, String reason) {
+            send(session, LiveServerMessage.rejected(message, retryAfterSeconds, reason));
         }
     }
 }

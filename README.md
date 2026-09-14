@@ -8,6 +8,9 @@ A full-stack code execution platform with a VS Code-like editor supporting 14 pr
 - **14 Supported Languages**: Java, Python, JavaScript, TypeScript, C, C++, Go, Rust, Ruby, PHP, Kotlin, Swift, Perl, Bash
 - **Live Execution**: Stream stdout/stderr as the process runs, type stdin interactively, and stop a run immediately
 - **Resource Limits**: Configurable timeout (default 30s) and memory limits (default 1MB)
+- **Admission Control**: Bounded concurrent executions, a wait queue with position and wait estimates, and 429s when the machine is full
+- **Authentication**: GitHub login plus email/password for local development
+- **Workspaces**: Signed-in users own snippets with public, unlisted, and private visibility
 - **Save & Share**: Persist snippets in PostgreSQL and share them with a short URL
 - **Problem Solving**: Problem statements, sample tests, and automated judging
 - **Compile-once Judge**: Compile submitted code once, then run every test case against the same binary
@@ -28,7 +31,8 @@ A full-stack code execution platform with a VS Code-like editor supporting 14 pr
          │                  ┌─────────────────┐ ┌────────────┐
          │                  │ Process Sandbox │ │ PostgreSQL │
          │                  │ (Compilers)     │ │ Snippets + │
-         │                  │                 │ │ Problems   │
+         │                  │                 │ │ Problems + │
+         │                  │                 │ │ Users      │
          └─────────────────▶└─────────────────┘ └────────────┘
 ```
 
@@ -101,17 +105,33 @@ Content-Type: application/json
 }
 ```
 
-Response:
+Accepted work returns `202` with a ticket. Poll `GET /api/jobs/{id}` until `state` is `COMPLETED`. Cancel with `DELETE /api/jobs/{id}`.
+
 ```json
 {
-  "output": "Hello, World!\n",
-  "error": "",
-  "executionTime": 45,
-  "status": "SUCCESS"
+  "id": "…",
+  "state": "QUEUED",
+  "position": 2,
+  "estimatedWaitMs": 4000
 }
 ```
 
-The buffered `POST /api/execute` endpoint remains available and is the playground fallback when a live session cannot be opened.
+When the job finishes, the ticket includes the existing execution result:
+
+```json
+{
+  "id": "…",
+  "state": "COMPLETED",
+  "result": {
+    "output": "Hello, World!\n",
+    "error": "",
+    "executionTime": 45,
+    "status": "SUCCESS"
+  }
+}
+```
+
+If the queue is full or the client is over its execution quota the API returns `429` with `Retry-After`. The buffered execute endpoint is the playground fallback when a live session cannot be opened. Queued work does not hold an HTTP request thread.
 
 ### Live Execution
 ```text
@@ -130,10 +150,12 @@ Client messages:
 Server messages:
 
 ```json
+{"type":"queued","executionId":"...","position":2,"estimatedWaitMs":4000}
 {"type":"started","executionId":"..."}
 {"type":"stdout","data":"..."}
 {"type":"stderr","data":"..."}
 {"type":"done","status":"SUCCESS","executionTime":42,"output":"...","error":""}
+{"type":"rejected","message":"...","retryAfterSeconds":3,"reason":"QUEUE_FULL"}
 {"type":"error","message":"..."}
 ```
 
@@ -144,6 +166,23 @@ Active processes are tracked per WebSocket session and are killed when the progr
 GET /api/languages
 ```
 
+### Authentication
+```http
+GET  /api/auth/providers
+GET  /api/auth/me
+POST /api/auth/register
+POST /api/auth/login
+POST /api/auth/logout
+GET  /api/auth/github?next=/dashboard
+GET  /api/auth/github/callback
+```
+
+Sessions are stored server-side and sent as an HttpOnly `cp_session` cookie. `GET /api/auth/me` restores the user after a refresh. Logout deletes the session and clears the cookie.
+
+Email/password is enabled by default for local development (`AUTH_LOCAL_ENABLED=true`). Registering `admin@localhost` (see `AUTH_ADMIN_EMAILS`) grants the `ADMIN` role. GitHub login requires `GITHUB_CLIENT_ID` and `GITHUB_CLIENT_SECRET`.
+
+The anonymous playground still runs code without login. Saving or modifying snippets requires a signed-in user.
+
 ### Save Snippet
 ```http
 POST /api/snippets
@@ -153,32 +192,31 @@ Content-Type: application/json
   "language": "python",
   "code": "print(input())",
   "stdin": "hello",
-  "title": "Optional title"
+  "title": "Optional title",
+  "visibility": "PUBLIC"
 }
 ```
 
-Creates a new snippet and returns a short `slug`. Language must be one of the supported IDs. Code is limited to 256KB. Creation is limited to 20 snippets per hour per IP.
+Requires login. Creates a new snippet owned by the current user and returns a short `slug`. Language must be one of the supported IDs. Code is limited to 256KB. Signed-in users can save 60 snippets per hour.
+
+Visibility is `PUBLIC`, `UNLISTED`, or `PRIVATE`. Private snippets are only readable by their owner; everyone else gets a 404.
 
 ### Load Snippet
 ```http
 GET /api/snippets/{slug}
 ```
 
-Increments the view count and returns language, code, stdin, title, timestamps, and view count.
+Public and unlisted snippets can be viewed without login. Private snippets return 404 unless the owner is signed in. View count increments for non-owners.
 
-### Fork Snippet
+### Fork / Update / Delete
 ```http
-POST /api/snippets/{slug}/fork
-Content-Type: application/json
-
-{
-  "language": "python",
-  "code": "print('forked')",
-  "stdin": ""
-}
+POST   /api/snippets/{slug}/fork
+PATCH  /api/snippets/{slug}
+DELETE /api/snippets/{slug}
+GET    /api/me/snippets?q=&visibility=&sort=updatedAt&order=desc
 ```
 
-Always creates a **new** snippet. The original is never modified. Omitted fields are copied from the original.
+Fork always creates a **new** snippet owned by the current user. The original is never modified. Update and delete require ownership. `/dashboard` lists the signed-in user's snippets.
 
 Shared links use `/s/{slug}` on the frontend.
 
@@ -207,7 +245,7 @@ Content-Type: application/json
 }
 ```
 
-Compiles once, then runs only sample tests. Failures include expected vs actual output.
+Returns `202` and uses the same admission queue as `/api/execute`. Poll `GET /api/jobs/{id}` for the judge result. Compiles once, then runs only sample tests. Failures include expected vs actual output.
 
 ### Submit Solution
 ```http
@@ -229,7 +267,7 @@ GET /api/submissions/{id}
 ```
 
 ### Admin Problem APIs
-Send `X-Admin-Key` (default local value `dev-admin-key`, override with `ADMIN_API_KEY`).
+Send `X-Admin-Key` (default local value `dev-admin-key`, override with `ADMIN_API_KEY`) **or** sign in as a user with the `ADMIN` role.
 
 ```http
 GET    /api/admin/problems
@@ -279,6 +317,13 @@ execution:
   timeout: 30000          # 30 seconds
   memory-limit: 1048576   # 1MB
   max-output-size: 65536  # 64KB
+  max-concurrent: 8
+  max-heavy-concurrent: 3
+  max-queue: 24
+  max-heavy-queue: 8
+  max-concurrent-per-client: 2
+  max-queued-per-client: 3
+  queue-timeout-ms: 20000
 ```
 
 ### Environment Variables
@@ -293,6 +338,13 @@ execution:
 | SPRING_DATASOURCE_USERNAME | PostgreSQL user | coder |
 | SPRING_DATASOURCE_PASSWORD | PostgreSQL password | coder |
 | ADMIN_API_KEY | Admin API key for problem management | dev-admin-key |
+| AUTH_LOCAL_ENABLED | Enable email/password register and login | true |
+| AUTH_ADMIN_EMAILS | Comma-separated emails granted ADMIN | admin@localhost |
+| AUTH_COOKIE_SECURE | Set the session cookie Secure flag | false |
+| FRONTEND_BASE_URL | Frontend origin for OAuth redirects | http://localhost:3000 |
+| GITHUB_CLIENT_ID | GitHub OAuth app client id | |
+| GITHUB_CLIENT_SECRET | GitHub OAuth app client secret | |
+| GITHUB_REDIRECT_URI | GitHub OAuth callback | http://localhost:3000/api/auth/github/callback |
 
 ## Project Structure
 
@@ -329,6 +381,12 @@ coder_platform-1/
 - **Output Limits**: Output is truncated to prevent memory exhaustion
 - **No Network Access**: Executed code cannot make network requests
 - **No File System Access**: Code can only access its temp directory
+- **Session Auth**: HttpOnly session cookies; logout invalidates the server session
+- **Private Snippets**: Non-owners receive 404 rather than a permission leak
+- **Rate Limits**: Anonymous execution is 20/hour per IP; signed-in users get 120/hour; admins are not rate limited
+- **Admission Control**: At most 8 programs run at once (3 of those may be compiled languages). Extra work waits in a bounded queue and is rejected with 429 when the queue is full
+- **Client Fairness**: One client can run 2 programs and queue 3 more, so a single user cannot consume the machine
+- **Trusted Proxy IPs**: Behind nginx the client IP comes from `X-Real-IP` / the right-most `X-Forwarded-For` hop
 
 ## Development
 

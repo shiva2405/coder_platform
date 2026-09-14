@@ -1,12 +1,19 @@
 package com.coderplatform.controller;
 
+import com.coderplatform.auth.CurrentUser;
 import com.coderplatform.model.JudgeResultResponse;
 import com.coderplatform.model.ProblemDetailResponse;
 import com.coderplatform.model.ProblemSummaryResponse;
 import com.coderplatform.model.SubmissionSummaryResponse;
 import com.coderplatform.model.SubmitCodeRequest;
+import com.coderplatform.model.WorkTicketResponse;
+import com.coderplatform.service.ClientKey;
+import com.coderplatform.service.ExecutionQuotaService;
 import com.coderplatform.service.JudgeService;
 import com.coderplatform.service.ProblemService;
+import com.coderplatform.service.QueuedWorkService;
+import com.coderplatform.util.ClientIpResolver;
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,10 +36,22 @@ public class ProblemController {
 
     private final ProblemService problemService;
     private final JudgeService judgeService;
+    private final QueuedWorkService queuedWorkService;
+    private final ExecutionQuotaService quotaService;
+    private final CurrentUser currentUser;
 
-    public ProblemController(ProblemService problemService, JudgeService judgeService) {
+    public ProblemController(
+            ProblemService problemService,
+            JudgeService judgeService,
+            QueuedWorkService queuedWorkService,
+            ExecutionQuotaService quotaService,
+            CurrentUser currentUser
+    ) {
         this.problemService = problemService;
         this.judgeService = judgeService;
+        this.queuedWorkService = queuedWorkService;
+        this.quotaService = quotaService;
+        this.currentUser = currentUser;
     }
 
     @GetMapping
@@ -46,25 +65,49 @@ public class ProblemController {
     }
 
     @PostMapping("/{slug}/run-samples")
-    public ResponseEntity<JudgeResultResponse> runSamples(
+    public ResponseEntity<WorkTicketResponse> runSamples(
             @PathVariable String slug,
-            @Valid @RequestBody SubmitCodeRequest request
+            @Valid @RequestBody SubmitCodeRequest request,
+            HttpServletRequest httpRequest
     ) {
         logger.info("Running samples for {} in {}", slug, request.getLanguage());
-        return ResponseEntity.ok(judgeService.runSamples(slug, request));
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(submitJudgeJob(
+                request,
+                httpRequest,
+                () -> judgeService.runSamples(slug, request)
+        ));
     }
 
     @PostMapping("/{slug}/submissions")
-    public ResponseEntity<JudgeResultResponse> submit(
+    public ResponseEntity<WorkTicketResponse> submit(
             @PathVariable String slug,
-            @Valid @RequestBody SubmitCodeRequest request
+            @Valid @RequestBody SubmitCodeRequest request,
+            HttpServletRequest httpRequest
     ) {
         logger.info("Submitting {} in {}", slug, request.getLanguage());
-        return ResponseEntity.status(HttpStatus.CREATED).body(judgeService.submit(slug, request));
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(submitJudgeJob(
+                request,
+                httpRequest,
+                () -> judgeService.submit(slug, request)
+        ));
     }
 
     @GetMapping("/{slug}/submissions")
     public ResponseEntity<List<SubmissionSummaryResponse>> listSubmissions(@PathVariable String slug) {
         return ResponseEntity.ok(judgeService.listSubmissions(slug));
+    }
+
+    private WorkTicketResponse submitJudgeJob(
+            SubmitCodeRequest request,
+            HttpServletRequest httpRequest,
+            java.util.concurrent.Callable<JudgeResultResponse> work
+    ) {
+        String ip = ClientIpResolver.resolve(httpRequest);
+        quotaService.consume(currentUser.optional().orElse(null), ip);
+        return queuedWorkService.submit(
+                request.getLanguage(),
+                ClientKey.of(currentUser.optional().orElse(null), ip),
+                work
+        );
     }
 }

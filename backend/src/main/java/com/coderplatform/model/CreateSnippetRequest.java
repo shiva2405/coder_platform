@@ -16,6 +16,8 @@ public class CreateSnippetRequest {
     @Size(max = 200, message = "Title must be at most 200 characters")
     private String title;
 
+    private SnippetVisibility visibility;
+
     public CreateSnippetRequest() {
     }
 
@@ -56,5 +58,13 @@ public class CreateSnippetRequest {
 
     public void setTitle(String title) {
         this.title = title;
+    }
+
+    public SnippetVisibility getVisibility() {
+        return visibility;
+    }
+
+    public void setVisibility(SnippetVisibility visibility) {
+        this.visibility = visibility;
     }
 }

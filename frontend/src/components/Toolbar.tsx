@@ -3,6 +3,7 @@ import { Play, Square, Sun, Moon, RotateCcw, Share2, Check, History } from 'luci
 import { Language, EditorTheme } from '../types';
 import LanguageSelector from './LanguageSelector';
 import AppNav from './AppNav';
+import UserMenu from './UserMenu';
 
 interface ToolbarProps {
   languages: Language[];
@@ -21,6 +22,7 @@ interface ToolbarProps {
   onThemeToggle: () => void;
   historyOpen: boolean;
   onToggleHistory: () => void;
+  cooldownSeconds?: number;
 }
 
 const Toolbar: React.FC<ToolbarProps> = ({
@@ -40,6 +42,7 @@ const Toolbar: React.FC<ToolbarProps> = ({
   onThemeToggle,
   historyOpen,
   onToggleHistory,
+  cooldownSeconds = 0,
 }) => {
   return (
     <div className="flex items-center justify-between px-4 py-3 bg-editor-sidebar border-b border-editor-border">
@@ -58,6 +61,8 @@ const Toolbar: React.FC<ToolbarProps> = ({
 
       {/* Right section */}
       <div className="flex items-center gap-2">
+        <UserMenu />
+
         <button
           onClick={onToggleHistory}
           className={`flex items-center gap-2 px-3 py-2 rounded-md transition-colors ${
@@ -118,16 +123,16 @@ const Toolbar: React.FC<ToolbarProps> = ({
         ) : (
           <button
             onClick={onRun}
-            disabled={!selectedLanguage}
+            disabled={!selectedLanguage || cooldownSeconds > 0}
             className={`flex items-center gap-2 px-4 py-2 rounded-md font-medium transition-colors ${
-              !selectedLanguage
+              !selectedLanguage || cooldownSeconds > 0
                 ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
                 : 'bg-green-600 hover:bg-green-700 text-white'
             }`}
-            title="Run the current program"
+            title={cooldownSeconds > 0 ? `Rate limited. Try again in ${cooldownSeconds}s` : 'Run the current program'}
           >
             <Play className="w-4 h-4" />
-            <span>Run</span>
+            <span>{cooldownSeconds > 0 ? `Wait ${cooldownSeconds}s` : 'Run'}</span>
           </button>
         )}
       </div>

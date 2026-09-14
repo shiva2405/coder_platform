@@ -49,9 +49,33 @@ public class GlobalExceptionHandler {
     }
 
     @ExceptionHandler(UnauthorizedAdminException.class)
-    public ResponseEntity<ApiErrorResponse> handleUnauthorized(UnauthorizedAdminException ex) {
+    public ResponseEntity<ApiErrorResponse> handleUnauthorizedAdmin(UnauthorizedAdminException ex) {
         return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
                 .body(new ApiErrorResponse("Unauthorized", HttpStatus.UNAUTHORIZED.value()));
+    }
+
+    @ExceptionHandler(UnauthorizedException.class)
+    public ResponseEntity<ApiErrorResponse> handleUnauthorized(UnauthorizedException ex) {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED)
+                .body(new ApiErrorResponse(ex.getMessage(), HttpStatus.UNAUTHORIZED.value()));
+    }
+
+    @ExceptionHandler(ForbiddenException.class)
+    public ResponseEntity<ApiErrorResponse> handleForbidden(ForbiddenException ex) {
+        return ResponseEntity.status(HttpStatus.FORBIDDEN)
+                .body(new ApiErrorResponse(ex.getMessage(), HttpStatus.FORBIDDEN.value()));
+    }
+
+    @ExceptionHandler(ConflictException.class)
+    public ResponseEntity<ApiErrorResponse> handleConflict(ConflictException ex) {
+        return ResponseEntity.status(HttpStatus.CONFLICT)
+                .body(new ApiErrorResponse(ex.getMessage(), HttpStatus.CONFLICT.value()));
+    }
+
+    @ExceptionHandler(InvalidAuthException.class)
+    public ResponseEntity<ApiErrorResponse> handleInvalidAuth(InvalidAuthException ex) {
+        return ResponseEntity.badRequest()
+                .body(new ApiErrorResponse(ex.getMessage(), HttpStatus.BAD_REQUEST.value()));
     }
 
     @ExceptionHandler(InvalidSnippetException.class)
@@ -60,11 +84,22 @@ public class GlobalExceptionHandler {
                 .body(new ApiErrorResponse(ex.getMessage(), HttpStatus.BAD_REQUEST.value()));
     }
 
+    @ExceptionHandler(JobNotFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleJobNotFound(JobNotFoundException ex) {
+        return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(new ApiErrorResponse(ex.getMessage(), HttpStatus.NOT_FOUND.value()));
+    }
+
     @ExceptionHandler(RateLimitExceededException.class)
     public ResponseEntity<ApiErrorResponse> handleRateLimit(RateLimitExceededException ex) {
         return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS)
                 .header(HttpHeaders.RETRY_AFTER, String.valueOf(ex.getRetryAfterSeconds()))
-                .body(new ApiErrorResponse(ex.getMessage(), HttpStatus.TOO_MANY_REQUESTS.value()));
+                .body(new ApiErrorResponse(
+                        ex.getMessage(),
+                        HttpStatus.TOO_MANY_REQUESTS.value(),
+                        ex.getRetryAfterSeconds(),
+                        ex.getReason()
+                ));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)

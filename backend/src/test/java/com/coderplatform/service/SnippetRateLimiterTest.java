@@ -51,4 +51,16 @@ class SnippetRateLimiterTest {
         long afterWindow = now + Duration.ofHours(1).toMillis() + 1;
         assertThat(limiter.tryAcquire("8.8.8.8", afterWindow)).isTrue();
     }
+
+    @Test
+    void authenticatedLimitIsIndependentOfAnonymousLimit() {
+        long now = 1_700_000_000_000L;
+        for (int i = 0; i < 20; i++) {
+            assertThat(limiter.tryAcquire("exec:ip:1.1.1.1", 20, now)).isTrue();
+        }
+        assertThat(limiter.tryAcquire("exec:ip:1.1.1.1", 20, now)).isFalse();
+        for (int i = 0; i < 60; i++) {
+            assertThat(limiter.tryAcquire("exec:user:9", 120, now + i)).isTrue();
+        }
+    }
 }

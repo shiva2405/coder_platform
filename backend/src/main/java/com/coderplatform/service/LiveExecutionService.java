@@ -1,19 +1,20 @@
 package com.coderplatform.service;
 
 import com.coderplatform.config.ExecutionConfig;
+import com.coderplatform.exception.AdmissionRejectedException;
+import com.coderplatform.exception.RateLimitExceededException;
+import com.coderplatform.model.CodeExecutionResponse;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
-import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -24,16 +25,21 @@ public class LiveExecutionService {
 
     private final CodeExecutionService executionService;
     private final ExecutionConfig config;
+    private final ExecutionAdmissionService admission;
     private final ConcurrentHashMap<String, LiveExecution> active = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> ownerToExecution = new ConcurrentHashMap<>();
-    private final Semaphore slots;
+    private final ConcurrentHashMap<String, PendingStart> pending = new ConcurrentHashMap<>();
     private final ExecutorService workers;
     private final ScheduledExecutorService scheduler;
 
-    public LiveExecutionService(CodeExecutionService executionService, ExecutionConfig config) {
+    public LiveExecutionService(
+            CodeExecutionService executionService,
+            ExecutionConfig config,
+            ExecutionAdmissionService admission
+    ) {
         this.executionService = executionService;
         this.config = config;
-        this.slots = new Semaphore(Math.max(1, config.getMaxConcurrentLive()));
+        this.admission = admission;
         this.workers = Executors.newCachedThreadPool(runnable -> {
             Thread thread = new Thread(runnable, "live-execution-worker");
             thread.setDaemon(true);
@@ -46,7 +52,24 @@ public class LiveExecutionService {
         });
     }
 
-    public String start(String ownerId, String language, String code, String initialStdin, LiveExecutionListener listener) {
+    public String start(
+            String ownerId,
+            String language,
+            String code,
+            String initialStdin,
+            LiveExecutionListener listener
+    ) {
+        return start(ownerId, language, code, initialStdin, ClientKey.anonymous(ownerId), listener);
+    }
+
+    public String start(
+            String ownerId,
+            String language,
+            String code,
+            String initialStdin,
+            ClientKey client,
+            LiveExecutionListener listener
+    ) {
         if (ownerId == null || ownerId.isBlank()) {
             throw new IllegalArgumentException("Owner is required");
         }
@@ -59,33 +82,55 @@ public class LiveExecutionService {
 
         releaseOwner(ownerId);
 
-        if (!slots.tryAcquire()) {
-            throw new IllegalStateException("Too many live executions. Try again shortly.");
+        ExecutionAdmissionService.Handle handle = admission.submit(language, client);
+        if (handle.isRejected()) {
+            AdmissionRejectedException rejection = handle.rejection();
+            throw rejection != null
+                    ? rejection
+                    : AdmissionRejectedException.queueFull(admission.retryHintSeconds());
         }
 
-        String id = UUID.randomUUID().toString();
-        AtomicBoolean unregistered = new AtomicBoolean(false);
-        LiveExecution execution = new LiveExecution(
-                id,
-                ownerId,
-                config,
-                executionService,
-                listener,
-                () -> unregister(id, ownerId, unregistered)
-        );
-
-        active.put(id, execution);
+        String id = handle.id();
+        PendingStart pendingStart = new PendingStart(id, ownerId, handle, listener);
+        pending.put(ownerId, pendingStart);
         ownerToExecution.put(ownerId, id);
-        listener.onStarted(id);
 
-        try {
-            workers.submit(() -> execution.execute(language, code, initialStdin == null ? "" : initialStdin, scheduler));
-        } catch (RejectedExecutionException e) {
-            execution.stop();
-            throw new IllegalStateException("Live execution is unavailable", e);
+        if (handle.state() == ExecutionAdmissionService.State.QUEUED) {
+            listener.onQueued(id, Math.max(1, handle.position()), handle.estimatedWaitMs());
+            handle.addListener(new ExecutionAdmissionService.Listener() {
+                @Override
+                public void onUpdate(int position, long estimatedWaitMs) {
+                    if (pending.get(ownerId) == pendingStart) {
+                        listener.onQueued(id, position, estimatedWaitMs);
+                    }
+                }
+
+                @Override
+                public void onRejected(String message, long retryAfterSeconds, String reason) {
+                    if (pending.remove(ownerId, pendingStart)) {
+                        ownerToExecution.remove(ownerId, id);
+                        listener.onRejected(message, retryAfterSeconds, reason);
+                    }
+                }
+            });
         }
 
-        logger.info("Started live execution {} for owner {}", id, ownerId);
+        handle.whenReady().whenComplete((lease, error) -> {
+            if (!pending.remove(ownerId, pendingStart)) {
+                if (lease != null) {
+                    lease.close();
+                }
+                return;
+            }
+            if (error != null) {
+                ownerToExecution.remove(ownerId, id);
+                notifyAdmissionFailure(listener, error);
+                return;
+            }
+            beginExecution(id, ownerId, language, code, initialStdin, listener, lease);
+        });
+
+        logger.info("Admitted live execution {} for owner {} ({})", id, ownerId, handle.state());
         return id;
     }
 
@@ -100,6 +145,13 @@ public class LiveExecutionService {
     }
 
     public void stopOwner(String ownerId) {
+        PendingStart queued = pending.remove(ownerId);
+        if (queued != null) {
+            queued.handle.cancel();
+            ownerToExecution.remove(ownerId, queued.id);
+            queued.listener.onCompleted(CodeExecutionResponse.stopped("", "", 0));
+            return;
+        }
         LiveExecution execution = activeForOwner(ownerId);
         if (execution != null) {
             execution.stop();
@@ -107,6 +159,11 @@ public class LiveExecutionService {
     }
 
     public void releaseOwner(String ownerId) {
+        PendingStart queued = pending.remove(ownerId);
+        if (queued != null) {
+            queued.handle.cancel();
+            ownerToExecution.remove(ownerId, queued.id);
+        }
         LiveExecution execution = activeForOwner(ownerId);
         if (execution != null) {
             logger.info("Releasing live execution {} after owner {} disconnected", execution.getId(), ownerId);
@@ -118,12 +175,24 @@ public class LiveExecutionService {
         return active.size();
     }
 
+    public int pendingCount() {
+        return pending.size();
+    }
+
     public boolean hasOwner(String ownerId) {
-        return activeForOwner(ownerId) != null;
+        return pending.containsKey(ownerId) || activeForOwner(ownerId) != null;
     }
 
     @PreDestroy
     public void shutdown() {
+        for (PendingStart queued : pending.values()) {
+            try {
+                queued.handle.cancel();
+            } catch (Exception e) {
+                logger.warn("Failed to cancel queued live execution {}", queued.id, e);
+            }
+        }
+        pending.clear();
         for (LiveExecution execution : active.values()) {
             try {
                 execution.stop();
@@ -141,10 +210,43 @@ public class LiveExecutionService {
         }
     }
 
+    private void beginExecution(
+            String id,
+            String ownerId,
+            String language,
+            String code,
+            String initialStdin,
+            LiveExecutionListener listener,
+            ExecutionAdmissionService.Lease lease
+    ) {
+        AtomicBoolean unregistered = new AtomicBoolean(false);
+        LiveExecution execution = new LiveExecution(
+                id,
+                ownerId,
+                config,
+                executionService,
+                listener,
+                () -> unregister(id, ownerId, unregistered, lease)
+        );
+
+        active.put(id, execution);
+        ownerToExecution.put(ownerId, id);
+        listener.onStarted(id);
+
+        try {
+            workers.submit(() -> execution.execute(language, code, initialStdin == null ? "" : initialStdin, scheduler));
+        } catch (RejectedExecutionException e) {
+            execution.stop();
+            throw new IllegalStateException("Live execution is unavailable", e);
+        }
+    }
+
     private LiveExecution requireActive(String ownerId) {
         LiveExecution execution = activeForOwner(ownerId);
         if (execution == null) {
-            throw new IllegalStateException("No running program");
+            throw new IllegalStateException(pending.containsKey(ownerId)
+                    ? "Program is still queued"
+                    : "No running program");
         }
         return execution;
     }
@@ -157,13 +259,48 @@ public class LiveExecutionService {
         return active.get(id);
     }
 
-    private void unregister(String id, String ownerId, AtomicBoolean unregistered) {
+    private void unregister(String id, String ownerId, AtomicBoolean unregistered, ExecutionAdmissionService.Lease lease) {
         if (!unregistered.compareAndSet(false, true)) {
             return;
         }
         active.remove(id);
         ownerToExecution.remove(ownerId, id);
-        slots.release();
+        lease.close();
         logger.info("Cleaned up live execution {}", id);
+    }
+
+    private static void notifyAdmissionFailure(LiveExecutionListener listener, Throwable error) {
+        if (error instanceof ExecutionAdmissionService.Cancellation) {
+            listener.onCompleted(CodeExecutionResponse.stopped("", "", 0));
+            return;
+        }
+        if (error instanceof RateLimitExceededException limited) {
+            listener.onRejected(limited.getMessage(), limited.getRetryAfterSeconds(), limited.getReason());
+            return;
+        }
+        listener.onRejected(
+                error.getMessage() == null ? "Execution was rejected" : error.getMessage(),
+                1,
+                AdmissionRejectedException.QUEUE_FULL
+        );
+    }
+
+    private static final class PendingStart {
+        private final String id;
+        private final String ownerId;
+        private final ExecutionAdmissionService.Handle handle;
+        private final LiveExecutionListener listener;
+
+        private PendingStart(
+                String id,
+                String ownerId,
+                ExecutionAdmissionService.Handle handle,
+                LiveExecutionListener listener
+        ) {
+            this.id = id;
+            this.ownerId = ownerId;
+            this.handle = handle;
+            this.listener = listener;
+        }
     }
 }

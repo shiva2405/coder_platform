@@ -9,8 +9,13 @@ import com.coderplatform.model.ProblemDetailResponse;
 import com.coderplatform.model.ProblemSummaryResponse;
 import com.coderplatform.model.SampleCaseResponse;
 import com.coderplatform.model.Verdict;
+import com.coderplatform.auth.CurrentUser;
+import com.coderplatform.model.WorkState;
+import com.coderplatform.model.WorkTicketResponse;
+import com.coderplatform.service.ExecutionQuotaService;
 import com.coderplatform.service.JudgeService;
 import com.coderplatform.service.ProblemService;
+import com.coderplatform.service.QueuedWorkService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -39,11 +44,26 @@ class ProblemControllerTest {
     @Mock
     private JudgeService judgeService;
 
+    @Mock
+    private QueuedWorkService queuedWorkService;
+
+    @Mock
+    private ExecutionQuotaService quotaService;
+
+    @Mock
+    private CurrentUser currentUser;
+
     private MockMvc mockMvc;
 
     @BeforeEach
     void setUp() {
-        mockMvc = MockMvcBuilders.standaloneSetup(new ProblemController(problemService, judgeService))
+        mockMvc = MockMvcBuilders.standaloneSetup(new ProblemController(
+                        problemService,
+                        judgeService,
+                        queuedWorkService,
+                        quotaService,
+                        currentUser
+                ))
                 .setControllerAdvice(new GlobalExceptionHandler())
                 .build();
     }
@@ -111,18 +131,28 @@ class ProblemControllerTest {
                 JudgeCaseResponse.publicView(1, true, Verdict.ACCEPTED, 2, 10, "1 2", "3", "3", null),
                 JudgeCaseResponse.publicView(2, false, Verdict.WRONG_ANSWER, 3, 0, "secret", "99", "0", null)
         ));
+        when(currentUser.optional()).thenReturn(java.util.Optional.empty());
+        when(queuedWorkService.submit(any(), any(), any())).thenAnswer(invocation -> {
+            java.util.concurrent.Callable<?> work = invocation.getArgument(2);
+            WorkTicketResponse ticket = new WorkTicketResponse();
+            ticket.setId("job-1");
+            ticket.setState(WorkState.COMPLETED);
+            ticket.setResult(work.call());
+            return ticket;
+        });
         when(judgeService.submit(eq("a-plus-b"), any())).thenReturn(result);
 
         mockMvc.perform(post("/api/problems/a-plus-b/submissions")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"language\":\"python\",\"code\":\"print(3)\"}"))
-                .andExpect(status().isCreated())
-                .andExpect(jsonPath("$.verdict").value("WRONG_ANSWER"))
-                .andExpect(jsonPath("$.cases[0].input").value("1 2"))
-                .andExpect(jsonPath("$.cases[0].expectedOutput").value("3"))
-                .andExpect(jsonPath("$.cases[0].actualOutput").value("3"))
-                .andExpect(jsonPath("$.cases[1].input").doesNotExist())
-                .andExpect(jsonPath("$.cases[1].expectedOutput").doesNotExist())
-                .andExpect(jsonPath("$.cases[1].actualOutput").doesNotExist());
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.state").value("COMPLETED"))
+                .andExpect(jsonPath("$.result.verdict").value("WRONG_ANSWER"))
+                .andExpect(jsonPath("$.result.cases[0].input").value("1 2"))
+                .andExpect(jsonPath("$.result.cases[0].expectedOutput").value("3"))
+                .andExpect(jsonPath("$.result.cases[0].actualOutput").value("3"))
+                .andExpect(jsonPath("$.result.cases[1].input").doesNotExist())
+                .andExpect(jsonPath("$.result.cases[1].expectedOutput").doesNotExist())
+                .andExpect(jsonPath("$.result.cases[1].actualOutput").doesNotExist());
     }
 }

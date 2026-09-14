@@ -1,5 +1,6 @@
 server:
   port: 8080
+  forward-headers-strategy: framework
   tomcat:
     threads:
       max: 200
@@ -30,7 +31,26 @@ snippet:
   max-code-bytes: 262144          # 256KB
   max-title-length: 200
   rate-limit-per-hour: 20
+  authenticated-rate-limit-per-hour: 60
   slug-length: 8
+
+# Execution / anonymous vs signed-in quotas
+rate-limit:
+  anonymous-per-hour: 20
+  authenticated-per-hour: 120
+
+# Authentication
+auth:
+  local-enabled: ${AUTH_LOCAL_ENABLED:true}
+  cookie-name: cp_session
+  cookie-secure: ${AUTH_COOKIE_SECURE:false}
+  session-ttl-days: 7
+  frontend-base-url: ${FRONTEND_BASE_URL:http://localhost:3000}
+  admin-emails: ${AUTH_ADMIN_EMAILS:admin@localhost}
+  github:
+    client-id: ${GITHUB_CLIENT_ID:}
+    client-secret: ${GITHUB_CLIENT_SECRET:}
+    redirect-uri: ${GITHUB_REDIRECT_URI:http://localhost:3000/api/auth/github/callback}
 
 # Code execution configuration
 execution:
@@ -38,6 +58,15 @@ execution:
   memory-limit: 134217728   # 128MB in bytes (enough for JVM languages to start)
   max-output-size: 65536    # 64KB output limit
   max-concurrent-live: 32
+  max-concurrent: 8
+  max-heavy-concurrent: 3
+  max-queue: 24
+  max-heavy-queue: 8
+  max-concurrent-per-client: 2
+  max-queued-per-client: 3
+  queue-timeout-ms: 20000
+  estimated-slot-ms: 2000
+  ticket-ttl-ms: 60000
   temp-directory: /tmp/coder-platform
 
 # Admin APIs (X-Admin-Key)

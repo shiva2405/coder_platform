@@ -11,6 +11,27 @@ export interface ExecutionRequest {
   stdin?: string;
 }
 
+export type SnippetVisibility = 'PUBLIC' | 'UNLISTED' | 'PRIVATE';
+
+export type UserRole = 'USER' | 'ADMIN';
+
+export interface User {
+  id: number;
+  email: string;
+  name: string;
+  avatarUrl: string | null;
+  role: UserRole;
+  createdAt: string;
+  updatedAt: string;
+  lastLoginAt?: string | null;
+}
+
+export interface UserSummary {
+  id: number;
+  name: string;
+  avatarUrl: string | null;
+}
+
 export interface Snippet {
   slug: string;
   language: string;
@@ -21,6 +42,25 @@ export interface Snippet {
   updatedAt: string;
   viewCount: number;
   forkedFrom: string | null;
+  visibility: SnippetVisibility;
+  owner: UserSummary | null;
+  ownedByMe: boolean;
+}
+
+export interface SnippetSummary {
+  slug: string;
+  language: string;
+  title: string | null;
+  visibility: SnippetVisibility;
+  createdAt: string;
+  updatedAt: string;
+  viewCount: number;
+  forkedFrom: string | null;
+}
+
+export interface SnippetList {
+  snippets: SnippetSummary[];
+  total: number;
 }
 
 export interface SnippetRequest {
@@ -28,6 +68,20 @@ export interface SnippetRequest {
   code: string;
   stdin?: string;
   title?: string;
+  visibility?: SnippetVisibility;
+}
+
+export interface SnippetUpdateRequest {
+  language?: string;
+  code?: string;
+  stdin?: string;
+  title?: string;
+  visibility?: SnippetVisibility;
+}
+
+export interface AuthProviders {
+  local: boolean;
+  github: boolean;
 }
 
 export type ExecutionStatus =
@@ -44,6 +98,30 @@ export interface ExecutionResponse {
   error: string;
   executionTime: number;
   status: ExecutionStatus;
+}
+
+export type WorkState =
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'COMPLETED'
+  | 'REJECTED'
+  | 'CANCELLED'
+  | 'QUEUE_TIMEOUT';
+
+export interface QueueStatus {
+  position: number;
+  estimatedWaitMs: number;
+}
+
+export interface WorkTicket<T = unknown> {
+  id: string;
+  state: WorkState;
+  position?: number | null;
+  estimatedWaitMs?: number | null;
+  retryAfterSeconds?: number | null;
+  reason?: string | null;
+  error?: string | null;
+  result?: T | null;
 }
 
 export interface RunHistoryEntry {

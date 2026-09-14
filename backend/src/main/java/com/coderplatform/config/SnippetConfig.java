@@ -10,6 +10,7 @@ public class SnippetConfig {
     private int maxCodeBytes = 262144;
     private int maxTitleLength = 200;
     private int rateLimitPerHour = 20;
+    private int authenticatedRateLimitPerHour = 60;
     private int slugLength = 8;
 
     public int getMaxCodeBytes() {
@@ -34,6 +35,14 @@ public class SnippetConfig {
 
     public void setRateLimitPerHour(int rateLimitPerHour) {
         this.rateLimitPerHour = rateLimitPerHour;
+    }
+
+    public int getAuthenticatedRateLimitPerHour() {
+        return authenticatedRateLimitPerHour;
+    }
+
+    public void setAuthenticatedRateLimitPerHour(int authenticatedRateLimitPerHour) {
+        this.authenticatedRateLimitPerHour = authenticatedRateLimitPerHour;
     }
 
     public int getSlugLength() {

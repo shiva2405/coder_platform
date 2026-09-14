@@ -13,6 +13,28 @@ public class LiveServerMessage {
     private String output;
     private String error;
     private String message;
+    private Integer position;
+    private Long estimatedWaitMs;
+    private Long retryAfterSeconds;
+    private String reason;
+
+    public static LiveServerMessage queued(String executionId, int position, long estimatedWaitMs) {
+        LiveServerMessage message = new LiveServerMessage();
+        message.type = "queued";
+        message.executionId = executionId;
+        message.position = position;
+        message.estimatedWaitMs = estimatedWaitMs;
+        return message;
+    }
+
+    public static LiveServerMessage rejected(String text, long retryAfterSeconds, String reason) {
+        LiveServerMessage message = new LiveServerMessage();
+        message.type = "rejected";
+        message.message = text;
+        message.retryAfterSeconds = retryAfterSeconds;
+        message.reason = reason;
+        return message;
+    }
 
     public static LiveServerMessage started(String executionId) {
         LiveServerMessage message = new LiveServerMessage();
@@ -82,5 +104,21 @@ public class LiveServerMessage {
 
     public String getMessage() {
         return message;
+    }
+
+    public Integer getPosition() {
+        return position;
+    }
+
+    public Long getEstimatedWaitMs() {
+        return estimatedWaitMs;
+    }
+
+    public Long getRetryAfterSeconds() {
+        return retryAfterSeconds;
+    }
+
+    public String getReason() {
+        return reason;
     }
 }

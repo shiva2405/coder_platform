@@ -1,10 +1,12 @@
 import { Link } from 'react-router-dom';
+import { useAuth } from '../auth/AuthProvider';
 
 interface AppNavProps {
-  current: 'playground' | 'problems';
+  current: 'playground' | 'problems' | 'dashboard';
 }
 
 const AppNav = ({ current }: AppNavProps) => {
+  const { user } = useAuth();
   const linkClass = (active: boolean) =>
     `px-3 py-1.5 rounded-md text-sm transition-colors ${
       active ? 'bg-editor-border text-white' : 'text-gray-400 hover:text-white hover:bg-editor-border/60'
@@ -26,6 +28,11 @@ const AppNav = ({ current }: AppNavProps) => {
         <Link to="/problems" className={linkClass(current === 'problems')}>
           Problems
         </Link>
+        {user && (
+          <Link to="/dashboard" className={linkClass(current === 'dashboard')}>
+            Dashboard
+          </Link>
+        )}
       </nav>
     </div>
   );

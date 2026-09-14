@@ -49,6 +49,15 @@ public enum Language {
         return requiresCompilation;
     }
 
+    /**
+     * Compiled toolchains that take more CPU and memory. These share a smaller
+     * slot pool so they cannot occupy every execution slot.
+     */
+    public boolean isHeavy() {
+        return this == JAVA || this == C || this == CPP || this == RUST
+                || this == KOTLIN || this == TYPESCRIPT;
+    }
+
     public String getCompileCommand() {
         return compileCommand;
     }

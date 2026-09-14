@@ -3,9 +3,11 @@ import { Link, useParams } from 'react-router-dom';
 import { Clock, Database, Play, Send } from 'lucide-react';
 import AppNav from '../components/AppNav';
 import CodeEditor from '../components/CodeEditor';
+import UserMenu from '../components/UserMenu';
 import JudgeResults from '../components/JudgeResults';
 import LanguageSelector from '../components/LanguageSelector';
 import { getLanguages, getProblem, getSubmission, listSubmissions, runSamples, submitSolution } from '../services/api';
+import { RateLimitedError, rateLimitFromAxios } from '../services/rateLimit';
 import { starterCode } from '../services/problemTemplates';
 import {
   Difficulty,
@@ -13,6 +15,7 @@ import {
   JudgeResult,
   Language,
   ProblemDetail,
+  QueueStatus,
   SubmissionSummary,
 } from '../types';
 
@@ -46,6 +49,9 @@ export default function ProblemSolvePage() {
   const [busy, setBusy] = useState<'samples' | 'submit' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [submissions, setSubmissions] = useState<SubmissionSummary[]>([]);
+  const [queue, setQueue] = useState<QueueStatus | null>(null);
+  const [cooldownUntil, setCooldownUntil] = useState(0);
+  const [now, setNow] = useState(() => Date.now());
 
   const loadSubmissions = useCallback(async (problemSlug: string) => {
     try {
@@ -84,39 +90,67 @@ export default function ProblemSolvePage() {
     setResult(null);
   };
 
+  const applyRateLimit = (err: unknown) => {
+    const limited = err instanceof RateLimitedError ? err : rateLimitFromAxios(err);
+    if (!limited) {
+      return null;
+    }
+    setCooldownUntil(Date.now() + limited.retryAfterSeconds * 1000);
+    setError(limited.message);
+    return limited;
+  };
+
+  useEffect(() => {
+    if (cooldownUntil <= Date.now()) {
+      return;
+    }
+    const timer = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(timer);
+  }, [cooldownUntil]);
+
+  const cooldownSeconds = Math.max(0, Math.ceil((cooldownUntil - now) / 1000));
+
   const handleRunSamples = useCallback(async () => {
-    if (!slug || !selectedLanguage || busy) {
+    if (!slug || !selectedLanguage || busy || cooldownUntil > Date.now()) {
       return;
     }
     setBusy('samples');
     setResultMode('samples');
     setError(null);
+    setQueue(null);
     try {
-      setResult(await runSamples(slug, selectedLanguage.id, code));
+      setResult(await runSamples(slug, selectedLanguage.id, code, undefined, setQueue));
     } catch (err: any) {
-      setError(err.response?.data?.error || err.message || 'Failed to run samples.');
+      if (!applyRateLimit(err)) {
+        setError(err.response?.data?.error || err.message || 'Failed to run samples.');
+      }
     } finally {
+      setQueue(null);
       setBusy(null);
     }
-  }, [slug, selectedLanguage, code, busy]);
+  }, [slug, selectedLanguage, code, busy, cooldownUntil]);
 
   const handleSubmit = useCallback(async () => {
-    if (!slug || !selectedLanguage || busy) {
+    if (!slug || !selectedLanguage || busy || cooldownUntil > Date.now()) {
       return;
     }
     setBusy('submit');
     setResultMode('submit');
     setError(null);
+    setQueue(null);
     try {
-      const judged = await submitSolution(slug, selectedLanguage.id, code);
+      const judged = await submitSolution(slug, selectedLanguage.id, code, undefined, setQueue);
       setResult(judged);
       await loadSubmissions(slug);
     } catch (err: any) {
-      setError(err.response?.data?.error || err.message || 'Failed to submit.');
+      if (!applyRateLimit(err)) {
+        setError(err.response?.data?.error || err.message || 'Failed to submit.');
+      }
     } finally {
+      setQueue(null);
       setBusy(null);
     }
-  }, [slug, selectedLanguage, code, busy, loadSubmissions]);
+  }, [slug, selectedLanguage, code, busy, loadSubmissions, cooldownUntil]);
 
   useEffect(() => {
     const onRun = () => {
@@ -142,6 +176,7 @@ export default function ProblemSolvePage() {
       <header className="flex items-center justify-between px-4 py-3 bg-editor-sidebar border-b border-editor-border">
         <AppNav current="problems" />
         <div className="flex items-center gap-2">
+          <UserMenu />
           <LanguageSelector
             languages={languages}
             selectedLanguage={selectedLanguage}
@@ -149,33 +184,47 @@ export default function ProblemSolvePage() {
           />
           <button
             onClick={handleRunSamples}
-            disabled={!selectedLanguage || !!busy || !problem}
+            disabled={!selectedLanguage || !!busy || !problem || cooldownSeconds > 0}
             className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium ${
-              !selectedLanguage || busy || !problem
+              !selectedLanguage || busy || !problem || cooldownSeconds > 0
                 ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
                 : 'bg-blue-600 hover:bg-blue-700 text-white'
             }`}
           >
             <Play className="w-4 h-4" />
-            {busy === 'samples' ? 'Running...' : 'Run Samples'}
+            {cooldownSeconds > 0
+              ? `Wait ${cooldownSeconds}s`
+              : busy === 'samples'
+                ? (queue ? `Queued #${queue.position}` : 'Running...')
+                : 'Run Samples'}
           </button>
           <button
             onClick={handleSubmit}
-            disabled={!selectedLanguage || !!busy || !problem}
+            disabled={!selectedLanguage || !!busy || !problem || cooldownSeconds > 0}
             className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm font-medium ${
-              !selectedLanguage || busy || !problem
+              !selectedLanguage || busy || !problem || cooldownSeconds > 0
                 ? 'bg-gray-700 text-gray-400 cursor-not-allowed'
                 : 'bg-green-600 hover:bg-green-700 text-white'
             }`}
           >
             <Send className="w-4 h-4" />
-            {busy === 'submit' ? 'Submitting...' : 'Submit'}
+            {cooldownSeconds > 0
+              ? `Wait ${cooldownSeconds}s`
+              : busy === 'submit'
+                ? (queue ? `Queued #${queue.position}` : 'Submitting...')
+                : 'Submit'}
           </button>
         </div>
       </header>
 
       {error && (
         <div className="px-4 py-2 bg-yellow-700 text-white text-sm text-center">{error}</div>
+      )}
+      {queue && !error && (
+        <div className="px-4 py-2 bg-amber-800 text-amber-50 text-sm text-center">
+          Queued at position {queue.position}
+          {queue.estimatedWaitMs > 0 ? ` · about ${Math.max(1, Math.round(queue.estimatedWaitMs / 1000))}s` : ''}
+        </div>
       )}
 
       <div className="flex-1 min-h-0 flex flex-col lg:flex-row">

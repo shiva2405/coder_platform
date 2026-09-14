@@ -1,4 +1,5 @@
-import { ExecutionRequest, ExecutionResponse, ExecutionStatus } from '../types';
+import { ExecutionRequest, ExecutionResponse, ExecutionStatus, QueueStatus } from '../types';
+import { RateLimitedError } from './rateLimit';
 
 export class LiveUnavailableError extends Error {
   constructor(message = 'Live execution is unavailable') {
@@ -8,6 +9,7 @@ export class LiveUnavailableError extends Error {
 }
 
 export interface LiveRunHandlers {
+  onQueued?: (queue: QueueStatus) => void;
   onStarted?: (executionId: string) => void;
   onStdout: (chunk: string) => void;
   onStderr: (chunk: string) => void;
@@ -31,6 +33,10 @@ interface LiveServerMessage {
   output?: string;
   error?: string;
   message?: string;
+  position?: number;
+  estimatedWaitMs?: number;
+  retryAfterSeconds?: number;
+  reason?: string;
 }
 
 const CONNECT_TIMEOUT_MS = 2000;
@@ -128,12 +134,35 @@ export function startLiveRun(
           }
 
           switch (message.type) {
+            case 'queued':
+              accept();
+              handlers.onQueued?.({
+                position: message.position || 1,
+                estimatedWaitMs: message.estimatedWaitMs || 0,
+              });
+              break;
             case 'started':
               accept();
               if (message.executionId) {
                 handlers.onStarted?.(message.executionId);
               }
               break;
+            case 'rejected': {
+              const rejected = new RateLimitedError(
+                message.message || 'Too many requests. Try again shortly.',
+                message.retryAfterSeconds || 1,
+                message.reason || 'RATE_LIMIT',
+              );
+              if (!resolved) {
+                resolved = true;
+                finished = true;
+                socket.close();
+                reject(rejected);
+                return;
+              }
+              failAfterStart(rejected.message);
+              return;
+            }
             case 'stdout':
               if (message.data) {
                 handlers.onStdout(message.data);

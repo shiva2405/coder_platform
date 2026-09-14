@@ -2,9 +2,14 @@ package com.coderplatform.model;
 
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
+import jakarta.persistence.ManyToOne;
 import jakarta.persistence.PrePersist;
 import jakarta.persistence.PreUpdate;
 import jakarta.persistence.Table;
@@ -40,6 +45,14 @@ public class Snippet {
     @Column(name = "forked_from_slug", length = 16)
     private String forkedFromSlug;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "owner_id")
+    private User owner;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 16)
+    private SnippetVisibility visibility = SnippetVisibility.PUBLIC;
+
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
 
@@ -57,6 +70,9 @@ public class Snippet {
         }
         if (stdin == null) {
             stdin = "";
+        }
+        if (visibility == null) {
+            visibility = SnippetVisibility.PUBLIC;
         }
     }
 
@@ -127,6 +143,22 @@ public class Snippet {
 
     public void setForkedFromSlug(String forkedFromSlug) {
         this.forkedFromSlug = forkedFromSlug;
+    }
+
+    public User getOwner() {
+        return owner;
+    }
+
+    public void setOwner(User owner) {
+        this.owner = owner;
+    }
+
+    public SnippetVisibility getVisibility() {
+        return visibility;
+    }
+
+    public void setVisibility(SnippetVisibility visibility) {
+        this.visibility = visibility;
     }
 
     public Instant getCreatedAt() {

@@ -58,6 +58,12 @@ services:
       - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/coder_platform
       - SPRING_DATASOURCE_USERNAME=coder
       - SPRING_DATASOURCE_PASSWORD=coder
+      - AUTH_LOCAL_ENABLED=true
+      - FRONTEND_BASE_URL=http://localhost:3000
+      - AUTH_ADMIN_EMAILS=admin@localhost
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+      - GITHUB_REDIRECT_URI=${GITHUB_REDIRECT_URI:-http://localhost:3000/api/auth/github/callback}
       # Thread pool settings for high concurrency
       - SERVER_TOMCAT_THREADS_MAX=400
       - SERVER_TOMCAT_THREADS_MIN_SPARE=50
