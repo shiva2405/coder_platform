@@ -1,0 +1,36 @@
+groups:
+  - name: coder-execution
+    rules:
+      - alert: HighExecutionErrorRate
+        expr: |
+          sum(rate(coder_executions_total{status!="SUCCESS"}[5m]))
+          /
+          clamp_min(sum(rate(coder_executions_total[5m])), 0.001) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: High code-execution error rate
+          description: More than 10% of executions failed over the last 5 minutes.
+
+      - alert: SlowExecutions
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum(rate(coder_execution_duration_seconds_bucket[5m])) by (le)
+          ) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Executions are slow
+          description: p95 execution time is above 10 seconds.
+
+      - alert: GrowingExecutionQueue
+        expr: coder_execution_queued > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Execution queue is growing
+          description: More than 10 programs have been waiting for a slot for 5 minutes.

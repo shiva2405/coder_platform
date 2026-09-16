@@ -33,6 +33,12 @@ public class Snippet {
     @Column(nullable = false, columnDefinition = "TEXT")
     private String code;
 
+    @Column(name = "files_json", columnDefinition = "TEXT")
+    private String filesJson;
+
+    @Column(length = 255)
+    private String entrypoint;
+
     @Column(nullable = false, columnDefinition = "TEXT")
     private String stdin = "";
 
@@ -111,6 +117,22 @@ public class Snippet {
 
     public void setCode(String code) {
         this.code = code;
+    }
+
+    public String getFilesJson() {
+        return filesJson;
+    }
+
+    public void setFilesJson(String filesJson) {
+        this.filesJson = filesJson;
+    }
+
+    public String getEntrypoint() {
+        return entrypoint;
+    }
+
+    public void setEntrypoint(String entrypoint) {
+        this.entrypoint = entrypoint;
     }
 
     public String getStdin() {

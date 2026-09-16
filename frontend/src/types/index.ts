@@ -5,10 +5,17 @@ export interface Language {
   sampleCode: string;
 }
 
+export interface ProjectFile {
+  path: string;
+  content: string;
+}
+
 export interface ExecutionRequest {
   language: string;
   code: string;
   stdin?: string;
+  files?: ProjectFile[];
+  entrypoint?: string;
 }
 
 export type SnippetVisibility = 'PUBLIC' | 'UNLISTED' | 'PRIVATE';
@@ -36,6 +43,8 @@ export interface Snippet {
   slug: string;
   language: string;
   code: string;
+  files?: ProjectFile[];
+  entrypoint?: string;
   stdin: string;
   title: string | null;
   createdAt: string;
@@ -66,6 +75,8 @@ export interface SnippetList {
 export interface SnippetRequest {
   language: string;
   code: string;
+  files?: ProjectFile[];
+  entrypoint?: string;
   stdin?: string;
   title?: string;
   visibility?: SnippetVisibility;
@@ -74,6 +85,8 @@ export interface SnippetRequest {
 export interface SnippetUpdateRequest {
   language?: string;
   code?: string;
+  files?: ProjectFile[];
+  entrypoint?: string;
   stdin?: string;
   title?: string;
   visibility?: SnippetVisibility;
@@ -129,6 +142,8 @@ export interface RunHistoryEntry {
   createdAt: number;
   language: string;
   code: string;
+  files?: ProjectFile[];
+  entrypoint?: string;
   stdin: string;
   status: ExecutionStatus;
   executionTime: number;

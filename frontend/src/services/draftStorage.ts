@@ -1,9 +1,16 @@
+import { ProjectFile } from '../types';
+import { snapshotFromSnippet } from './projectFiles';
+
 const HOME_KEY = 'coder-platform:unsaved-draft';
 const SLUG_KEY_PREFIX = 'coder-platform:unsaved-draft:';
 
 export interface EditorDraft {
   languageId: string;
   code: string;
+  files?: ProjectFile[];
+  entrypoint?: string;
+  openTabs?: string[];
+  activePath?: string;
   stdin: string;
   updatedAt: number;
 }
@@ -22,9 +29,18 @@ export function loadDraft(slug: string | null): EditorDraft | null {
     if (typeof parsed.languageId !== 'string' || typeof parsed.code !== 'string') {
       return null;
     }
+    const files = Array.isArray(parsed.files)
+      ? parsed.files.filter((file): file is ProjectFile =>
+          Boolean(file && typeof file.path === 'string' && typeof file.content === 'string'))
+      : undefined;
+    const snapshot = snapshotFromSnippet(parsed.languageId, parsed.code, files, parsed.entrypoint);
     return {
-      languageId: parsed.languageId,
-      code: parsed.code,
+      languageId: snapshot.languageId,
+      code: snapshot.files.find((file) => file.path === snapshot.entrypoint)?.content ?? parsed.code,
+      files: snapshot.files,
+      entrypoint: snapshot.entrypoint,
+      openTabs: Array.isArray(parsed.openTabs) ? parsed.openTabs.filter((path) => typeof path === 'string') : undefined,
+      activePath: typeof parsed.activePath === 'string' ? parsed.activePath : undefined,
       stdin: typeof parsed.stdin === 'string' ? parsed.stdin : '',
       updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0,
     };
@@ -47,11 +63,19 @@ export function saveDraft(slug: string | null, draft: Omit<EditorDraft, 'updated
 
 export function draftsDiffer(
   draft: EditorDraft,
-  snippet: { language: string; code: string; stdin: string }
+  snippet: { language: string; code: string; stdin: string; files?: ProjectFile[]; entrypoint?: string }
 ): boolean {
-  return (
-    draft.languageId !== snippet.language ||
-    draft.code !== snippet.code ||
-    draft.stdin !== snippet.stdin
-  );
+  const draftFiles = draft.files ?? [{ path: draft.entrypoint || 'main', content: draft.code }];
+  const snippetProject = snapshotFromSnippet(snippet.language, snippet.code, snippet.files, snippet.entrypoint);
+  if (draft.languageId !== snippet.language || draft.stdin !== snippet.stdin) {
+    return true;
+  }
+  if ((draft.entrypoint || snippetProject.entrypoint) !== snippetProject.entrypoint) {
+    return true;
+  }
+  if (draftFiles.length !== snippetProject.files.length) {
+    return true;
+  }
+  const byPath = new Map(snippetProject.files.map((file) => [file.path, file.content]));
+  return draftFiles.some((file) => byPath.get(file.path) !== file.content);
 }

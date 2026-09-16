@@ -18,3 +18,5 @@ const LANGUAGE_MAP: Record<string, string> = {
 export function getMonacoLanguage(languageId: string): string {
   return LANGUAGE_MAP[languageId] || 'plaintext';
 }
+
+export { monacoLanguageFromPath as getMonacoLanguageFromPath } from './projectFiles';

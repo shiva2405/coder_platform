@@ -1,12 +1,15 @@
 package com.coderplatform.model;
 
 import java.time.Instant;
+import java.util.List;
 
 public class SnippetResponse {
 
     private String slug;
     private String language;
     private String code;
+    private List<ProjectFile> files;
+    private String entrypoint;
     private String stdin;
     private String title;
     private Instant createdAt;
@@ -66,6 +69,22 @@ public class SnippetResponse {
 
     public void setCode(String code) {
         this.code = code;
+    }
+
+    public List<ProjectFile> getFiles() {
+        return files;
+    }
+
+    public void setFiles(List<ProjectFile> files) {
+        this.files = files;
+    }
+
+    public String getEntrypoint() {
+        return entrypoint;
+    }
+
+    public void setEntrypoint(String entrypoint) {
+        this.entrypoint = entrypoint;
     }
 
     public String getStdin() {

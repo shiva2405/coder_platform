@@ -63,9 +63,9 @@ final class LiveExecution {
         return completed.get();
     }
 
-    void execute(String language, String code, String initialStdin, ScheduledExecutorService scheduler) {
+    void execute(ProjectSources sources, String initialStdin, ScheduledExecutorService scheduler) {
         try {
-            program = executionService.prepare(language, code);
+            program = executionService.prepare(sources);
             if (completed.get()) {
                 finish(stoppedResponse());
                 return;

@@ -224,6 +224,8 @@ export function startLiveRun(
           type: 'start',
           language: request.language,
           code: request.code,
+          files: request.files,
+          entrypoint: request.entrypoint,
           stdin: request.stdin || '',
         }));
       })

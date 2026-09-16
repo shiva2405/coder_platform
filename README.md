@@ -5,6 +5,7 @@ A full-stack code execution platform with a VS Code-like editor supporting 14 pr
 ## Features
 
 - **VS Code-like Editor**: Monaco Editor with syntax highlighting, auto-indentation, and IntelliSense
+- **Multi-file Projects**: File tree, tabs, per-file undo, and a chosen entrypoint for run/share
 - **14 Supported Languages**: Java, Python, JavaScript, TypeScript, C, C++, Go, Rust, Ruby, PHP, Kotlin, Swift, Perl, Bash
 - **Live Execution**: Stream stdout/stderr as the process runs, type stdin interactively, and stop a run immediately
 - **Resource Limits**: Configurable timeout (default 30s) and memory limits (default 1MB)
@@ -101,6 +102,10 @@ Content-Type: application/json
 {
   "language": "python",
   "code": "print('Hello, World!')",
+  "files": [
+    { "path": "main.py", "content": "print('Hello, World!')" }
+  ],
+  "entrypoint": "main.py",
   "stdin": ""
 }
 ```
@@ -287,7 +292,11 @@ Starter problems: `a-plus-b`, `fizzbuzz`, `palindrome-string`, `maximum-of-n`.
 ### Health Check
 ```http
 GET /api/health
+GET /actuator/health
+GET /actuator/prometheus
 ```
+
+`GET /api/health` now probes the execution environment (spawns a short `bash` process) and returns `200` with `{"status":"UP",...}` only when that probe succeeds. A broken compiler host returns `503`. Actuator exposes the same check plus Prometheus metrics. Every HTTP response includes `X-Request-Id`; logs include `requestId`, `jobId`, and `language` so a run can be followed across the queue and worker threads.
 
 ## Supported Languages
 
@@ -370,6 +379,9 @@ coder_platform-1/
 │   ├── Dockerfile.frontend
 │   ├── nginx.conf
 │   └── compilers/
+├── observability/              # Prometheus + Grafana
+│   ├── prometheus/
+│   └── grafana/
 └── docker-compose.yml
 ```
 
@@ -400,14 +412,32 @@ coder_platform-1/
 ### Running Tests
 
 ```bash
-# Backend tests
+# Backend unit tests (skips optional compiler/container cases)
 cd backend
 mvn test
+
+# Optional language integration tests (requires installed compilers)
+mvn test -Pcontainer-tests
 
 # Frontend tests
 cd frontend
 npm test
 ```
+
+JaCoCo writes an HTML report to `backend/target/site/jacoco/index.html`.
+
+### Monitoring
+
+Start Prometheus and Grafana alongside the stack:
+
+```bash
+docker compose --profile observability up --build
+```
+
+- Prometheus: http://localhost:9090
+- Grafana: http://localhost:3001 (anonymous viewer, or `admin` / `admin`)
+- Dashboard: **Coder Platform / Code execution**
+- Alerts: high error rate, slow p95 executions, and a growing queue (`observability/prometheus/alerts.yml`)
 
 ## License
 

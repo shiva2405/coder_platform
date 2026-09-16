@@ -1,4 +1,4 @@
-import { ExecutionResponse, RunHistoryEntry } from '../types';
+import { ExecutionResponse, ProjectFile, RunHistoryEntry } from '../types';
 
 export const MAX_RUN_HISTORY = 50;
 export const OUTPUT_PREVIEW_LIMIT = 500;
@@ -10,6 +10,8 @@ const STORE_NAME = 'run-history';
 export interface NewRunHistoryInput {
   language: string;
   code: string;
+  files?: ProjectFile[];
+  entrypoint?: string;
   stdin: string;
   status: RunHistoryEntry['status'];
   executionTime: number;
@@ -81,6 +83,8 @@ export function buildHistoryEntry(input: NewRunHistoryInput, createdAt = Date.no
     createdAt,
     language: input.language,
     code: input.code,
+    files: input.files,
+    entrypoint: input.entrypoint,
     stdin: input.stdin,
     status: input.status,
     executionTime: input.executionTime,

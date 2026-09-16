@@ -4,16 +4,32 @@ import { Eye } from 'lucide-react';
 import { useAuth } from './auth/AuthProvider';
 import CodeEditor from './components/CodeEditor';
 import ConfirmDialog from './components/ConfirmDialog';
+import EditorTabs from './components/EditorTabs';
+import FileExplorer from './components/FileExplorer';
 import HistorySidebar from './components/HistorySidebar';
 import LoginModal from './components/LoginModal';
+import NameDialog from './components/NameDialog';
 import OutputPanel from './components/OutputPanel';
 import RunDiffModal from './components/RunDiffModal';
 import Toolbar from './components/Toolbar';
 import { useRunHistory } from './hooks/useRunHistory';
-import { Language, ExecutionResponse, EditorTheme, QueueStatus, Snippet, RunHistoryEntry, SnippetVisibility } from './types';
-import { executeCode, forkSnippet, getLanguages, getSnippet, saveSnippet, updateSnippet } from './services/api';
+import { Language, ExecutionResponse, EditorTheme, QueueStatus, Snippet, RunHistoryEntry, SnippetVisibility, ProjectFile } from './types';
+import { executeCode, forkSnippet, getSnippet, saveSnippet, updateSnippet } from './services/api';
+import { defaultSampleCodes, loadLanguages } from './services/defaultLanguages';
 import { draftsDiffer, loadDraft, saveDraft } from './services/draftStorage';
 import { LiveUnavailableError, LiveRunSession, startLiveRun } from './services/liveExecution';
+import {
+  defaultFileName,
+  defaultProject,
+  entrypointContent,
+  joinPath,
+  normalizeProjectPath,
+  parentDir,
+  projectsEqual,
+  replaceFile,
+  snapshotFromSnippet,
+  validateProject,
+} from './services/projectFiles';
 import { RateLimitedError, rateLimitFromAxios } from './services/rateLimit';
 import { historyToResult } from './services/runHistoryStorage';
 
@@ -28,58 +44,12 @@ function readHistoryOpen(): boolean {
   }
 }
 
-const MAX_CODE_BYTES = 256 * 1024;
-
-// Default sample codes for fallback
-const defaultSampleCodes: Record<string, string> = {
-  java: `public class Main {
-    public static void main(String[] args) {
-        System.out.println("Hello, World!");
-    }
-}`,
-  python: `print("Hello, World!")`,
-  javascript: `console.log("Hello, World!");`,
-  typescript: `const greeting: string = "Hello, World!";
-console.log(greeting);`,
-  c: `#include <stdio.h>
-
-int main() {
-    printf("Hello, World!\\n");
-    return 0;
-}`,
-  cpp: `#include <iostream>
-
-int main() {
-    std::cout << "Hello, World!" << std::endl;
-    return 0;
-}`,
-  go: `package main
-
-import "fmt"
-
-func main() {
-    fmt.Println("Hello, World!")
-}`,
-  rust: `fn main() {
-    println!("Hello, World!");
-}`,
-  ruby: `puts "Hello, World!"`,
-  php: `<?php
-echo "Hello, World!\\n";
-?>`,
-  kotlin: `fun main() {
-    println("Hello, World!")
-}`,
-  swift: `print("Hello, World!")`,
-  perl: `print "Hello, World!\\n";`,
-  bash: `#!/bin/bash
-echo "Hello, World!"`,
-};
-
 interface OriginSnippet {
   slug: string;
   language: string;
   code: string;
+  files: ProjectFile[];
+  entrypoint: string;
   stdin: string;
   viewCount: number;
   title: string | null;
@@ -87,8 +57,13 @@ interface OriginSnippet {
   ownedByMe: boolean;
 }
 
-function utf8ByteLength(value: string): number {
-  return new TextEncoder().encode(value).length;
+type NameDialogState =
+  | { mode: 'file'; folder?: string }
+  | { mode: 'folder'; folder?: string }
+  | { mode: 'rename'; path: string };
+
+function sampleFor(language: Language): string {
+  return language.sampleCode || defaultSampleCodes[language.id] || '';
 }
 
 async function copyText(text: string): Promise<void> {
@@ -113,8 +88,15 @@ function App() {
   const { user } = useAuth();
   const [languages, setLanguages] = useState<Language[]>([]);
   const [selectedLanguage, setSelectedLanguage] = useState<Language | null>(null);
-  const [code, setCode] = useState<string>('');
+  const [files, setFiles] = useState<ProjectFile[]>([]);
+  const [entrypoint, setEntrypoint] = useState('');
+  const [openTabs, setOpenTabs] = useState<string[]>([]);
+  const [activePath, setActivePath] = useState('');
+  const [extraFolders, setExtraFolders] = useState<string[]>([]);
   const [stdin, setStdin] = useState<string>('');
+  const [nameDialog, setNameDialog] = useState<NameDialogState | null>(null);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [result, setResult] = useState<ExecutionResponse | null>(null);
   const [isRunning, setIsRunning] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
@@ -142,16 +124,47 @@ function App() {
   const [now, setNow] = useState(() => Date.now());
   const loadedSlugRef = useRef<string | null>(null);
   const copyResetRef = useRef<number | undefined>(undefined);
-  const baselineRef = useRef<{ language: string; code: string; stdin: string } | null>(null);
+  const baselineRef = useRef<{ language: string; files: ProjectFile[]; entrypoint: string; stdin: string } | null>(null);
   const liveSessionRef = useRef<LiveRunSession | null>(null);
   const restAbortRef = useRef<AbortController | null>(null);
   const interactiveStdinRef = useRef('');
   const runFinishedRef = useRef(false);
   const { runs, error: historyError, recordRun, clearHistory } = useRunHistory();
 
-  const setBaseline = (language: string, nextCode: string, nextStdin: string) => {
-    baselineRef.current = { language, code: nextCode, stdin: nextStdin };
+  const setBaseline = (language: string, nextFiles: ProjectFile[], nextEntrypoint: string, nextStdin: string) => {
+    baselineRef.current = { language, files: nextFiles, entrypoint: nextEntrypoint, stdin: nextStdin };
   };
+
+  const applyProject = (nextFiles: ProjectFile[], nextEntrypoint: string, nextTabs?: string[], nextActive?: string) => {
+    setFiles(nextFiles);
+    setEntrypoint(nextEntrypoint);
+    const tabs = nextTabs && nextTabs.length > 0
+      ? nextTabs.filter((path) => nextFiles.some((file) => file.path === path))
+      : [nextEntrypoint];
+    const resolvedTabs = tabs.length > 0 ? tabs : [nextEntrypoint];
+    setOpenTabs(resolvedTabs);
+    const active = nextActive && nextFiles.some((file) => file.path === nextActive)
+      ? nextActive
+      : resolvedTabs[0];
+    setActivePath(active);
+  };
+
+  const openFile = (path: string) => {
+    setOpenTabs((tabs) => (tabs.includes(path) ? tabs : [...tabs, path]));
+    setActivePath(path);
+  };
+
+  const closeTab = (path: string) => {
+    setOpenTabs((tabs) => {
+      const next = tabs.filter((tab) => tab !== path);
+      if (path === activePath) {
+        setActivePath(next[next.length - 1] || files[0]?.path || '');
+      }
+      return next.length > 0 ? next : tabs;
+    });
+  };
+
+  const activeCode = files.find((file) => file.path === activePath)?.content ?? '';
 
   const applyLanguage = useCallback((langs: Language[], languageId: string): Language | null => {
     return langs.find((language) => language.id === languageId) || langs[0] || null;
@@ -163,21 +176,26 @@ function App() {
       return;
     }
     setSelectedLanguage(defaultLang);
-    const nextCode = defaultLang.sampleCode || defaultSampleCodes[defaultLang.id] || '';
-    setCode(nextCode);
+    const project = defaultProject(defaultLang.id, sampleFor(defaultLang));
+    applyProject(project.files, project.entrypoint);
+    setExtraFolders([]);
     setStdin('');
     setOriginSnippet(null);
-    setBaseline(defaultLang.id, nextCode, '');
+    setBaseline(defaultLang.id, project.files, project.entrypoint, '');
   }, []);
 
-  const applyDraft = useCallback((langs: Language[], languageId: string, nextCode: string, nextStdin: string) => {
-    const language = applyLanguage(langs, languageId);
+  const applyDraft = useCallback((langs: Language[], draft: ReturnType<typeof loadDraft>) => {
+    if (!draft) {
+      return;
+    }
+    const language = applyLanguage(langs, draft.languageId);
     if (language) {
       setSelectedLanguage(language);
     }
-    setCode(nextCode);
-    setStdin(nextStdin);
-    setBaseline(languageId, nextCode, nextStdin);
+    const project = snapshotFromSnippet(draft.languageId, draft.code, draft.files, draft.entrypoint);
+    applyProject(project.files, project.entrypoint, draft.openTabs, draft.activePath);
+    setStdin(draft.stdin);
+    setBaseline(draft.languageId, project.files, project.entrypoint, draft.stdin);
   }, [applyLanguage]);
 
   const applySnippet = useCallback((langs: Language[], snippet: Snippet) => {
@@ -185,12 +203,15 @@ function App() {
     if (language) {
       setSelectedLanguage(language);
     }
-    setCode(snippet.code);
+    const project = snapshotFromSnippet(snippet.language, snippet.code, snippet.files, snippet.entrypoint);
+    applyProject(project.files, project.entrypoint);
     setStdin(snippet.stdin || '');
     setOriginSnippet({
       slug: snippet.slug,
       language: snippet.language,
-      code: snippet.code,
+      code: project.files.find((file) => file.path === project.entrypoint)?.content ?? snippet.code,
+      files: project.files,
+      entrypoint: project.entrypoint,
       stdin: snippet.stdin || '',
       viewCount: snippet.viewCount,
       title: snippet.title,
@@ -198,24 +219,15 @@ function App() {
       ownedByMe: Boolean(snippet.ownedByMe),
     });
     loadedSlugRef.current = snippet.slug;
-    setBaseline(snippet.language, snippet.code, snippet.stdin || '');
+    setBaseline(snippet.language, project.files, project.entrypoint, snippet.stdin || '');
   }, [applyLanguage]);
 
   useEffect(() => {
     const fetchLanguages = async () => {
-      try {
-        const langs = await getLanguages();
-        setLanguages(langs);
-      } catch (err) {
-        console.error('Failed to fetch languages:', err);
+      const { languages: langs, offline } = await loadLanguages();
+      setLanguages(langs);
+      if (offline) {
         setError('Failed to connect to server. Using offline mode.');
-        const defaultLangs: Language[] = Object.entries(defaultSampleCodes).map(([id, sampleCode]) => ({
-          id,
-          name: id.charAt(0).toUpperCase() + id.slice(1),
-          extension: `.${id}`,
-          sampleCode,
-        }));
-        setLanguages(defaultLangs);
       }
     };
     fetchLanguages();
@@ -240,8 +252,10 @@ function App() {
             language: snippet.language,
             code: snippet.code,
             stdin: snippet.stdin || '',
+            files: snippet.files,
+            entrypoint: snippet.entrypoint,
           })) {
-            applyDraft(languages, draft.languageId, draft.code, draft.stdin);
+            applyDraft(languages, draft);
           }
           setError(null);
         } catch (err) {
@@ -259,7 +273,7 @@ function App() {
       loadedSlugRef.current = null;
       const draft = loadDraft(null);
       if (draft) {
-        applyDraft(languages, draft.languageId, draft.code, draft.stdin);
+        applyDraft(languages, draft);
         setOriginSnippet(null);
       } else {
         applyDefaultEditor(languages);
@@ -277,12 +291,16 @@ function App() {
     const timer = window.setTimeout(() => {
       saveDraft(routeSlug ?? null, {
         languageId: selectedLanguage.id,
-        code,
+        code: entrypointContent(files, entrypoint),
+        files,
+        entrypoint,
+        openTabs,
+        activePath,
         stdin,
       });
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [ready, selectedLanguage, code, stdin, routeSlug]);
+  }, [ready, selectedLanguage, files, entrypoint, openTabs, activePath, stdin, routeSlug]);
 
   useEffect(() => {
     try {
@@ -328,6 +346,8 @@ function App() {
     runLanguage: string,
     runCode: string,
     runStdin: string,
+    runFiles?: ProjectFile[],
+    runEntrypoint?: string,
   ) => {
     if (runFinishedRef.current) {
       return;
@@ -345,6 +365,8 @@ function App() {
     await recordRun({
       language: runLanguage,
       code: runCode,
+      files: runFiles,
+      entrypoint: runEntrypoint,
       stdin: runStdin,
       status: response.status,
       executionTime: response.executionTime,
@@ -358,6 +380,8 @@ function App() {
     runCode: string,
     runStdin: string,
     announceFallback: boolean,
+    runFiles: ProjectFile[],
+    runEntrypoint: string,
   ) => {
     setLiveMode(false);
     if (announceFallback) {
@@ -373,9 +397,11 @@ function App() {
       const response = await executeCode({
         language: runLanguage,
         code: runCode,
+        files: runFiles,
+        entrypoint: runEntrypoint,
         stdin: runStdin,
       }, controller.signal, setQueue);
-      await finishRun(response, runLanguage, runCode, runStdin);
+      await finishRun(response, runLanguage, runCode, runStdin, runFiles, runEntrypoint);
     } catch (err: any) {
       if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError' || err?.name === 'AbortError') {
         await finishRun({
@@ -383,7 +409,7 @@ function App() {
           error: '',
           executionTime: 0,
           status: 'STOPPED',
-        }, runLanguage, runCode, runStdin);
+        }, runLanguage, runCode, runStdin, runFiles, runEntrypoint);
         return;
       }
       const limited = applyRateLimit(err);
@@ -393,7 +419,7 @@ function App() {
         error: limited?.message || err.response?.data?.error || err.message || 'Failed to execute code. Please try again.',
         executionTime: 0,
         status: 'ERROR',
-      }, runLanguage, runCode, runStdin);
+      }, runLanguage, runCode, runStdin, runFiles, runEntrypoint);
     }
   }, [applyRateLimit, finishRun]);
 
@@ -416,14 +442,25 @@ function App() {
     setError(null);
     setQueue(null);
 
+    const projectError = validateProject(files, entrypoint);
+    if (projectError) {
+      setError(projectError);
+      setIsRunning(false);
+      return;
+    }
+
     const runLanguage = selectedLanguage.id;
-    const runCode = code;
+    const runFiles = files;
+    const runEntrypoint = entrypoint;
+    const runCode = entrypointContent(runFiles, runEntrypoint);
     const runStdin = stdin;
 
     try {
       const session = await startLiveRun({
         language: runLanguage,
         code: runCode,
+        files: runFiles,
+        entrypoint: runEntrypoint,
         stdin: runStdin,
       }, {
         onQueued: setQueue,
@@ -431,7 +468,7 @@ function App() {
         onStdout: (chunk) => setLiveOutput((current) => current + chunk),
         onStderr: (chunk) => setLiveError((current) => current + chunk),
         onDone: (response) => {
-          void finishRun(response, runLanguage, runCode, runStdin + interactiveStdinRef.current);
+          void finishRun(response, runLanguage, runCode, runStdin + interactiveStdinRef.current, runFiles, runEntrypoint);
         },
         onError: (message) => {
           void finishRun({
@@ -439,7 +476,7 @@ function App() {
             error: message,
             executionTime: 0,
             status: 'ERROR',
-          }, runLanguage, runCode, runStdin + interactiveStdinRef.current);
+          }, runLanguage, runCode, runStdin + interactiveStdinRef.current, runFiles, runEntrypoint);
         },
       });
       if (runFinishedRef.current) {
@@ -450,7 +487,7 @@ function App() {
       setLiveMode(true);
     } catch (err) {
       if (err instanceof LiveUnavailableError) {
-        await runBuffered(runLanguage, runCode, runStdin, true);
+        await runBuffered(runLanguage, runCode, runStdin, true, runFiles, runEntrypoint);
         return;
       }
       const limited = applyRateLimit(err);
@@ -460,7 +497,7 @@ function App() {
           error: limited.message,
           executionTime: 0,
           status: 'ERROR',
-        }, runLanguage, runCode, runStdin);
+        }, runLanguage, runCode, runStdin, runFiles, runEntrypoint);
         return;
       }
       console.error('Live execution error:', err);
@@ -469,9 +506,9 @@ function App() {
         error: err instanceof Error ? err.message : 'Failed to execute code. Please try again.',
         executionTime: 0,
         status: 'ERROR',
-      }, runLanguage, runCode, runStdin);
+      }, runLanguage, runCode, runStdin, runFiles, runEntrypoint);
     }
-  }, [selectedLanguage, code, stdin, isRunning, cooldownUntil, finishRun, runBuffered, applyRateLimit]);
+  }, [selectedLanguage, files, entrypoint, stdin, isRunning, cooldownUntil, finishRun, runBuffered, applyRateLimit]);
 
   const handleStop = useCallback(() => {
     if (liveSessionRef.current) {
@@ -507,14 +544,25 @@ function App() {
   }, []);
 
   const handleLanguageSelect = (language: Language) => {
+    const previous = selectedLanguage;
     setSelectedLanguage(language);
-    setCode(language.sampleCode || defaultSampleCodes[language.id] || '');
+    const onlyDefaultFile = files.length === 1 && previous
+      && files[0].path === defaultFileName(previous.id)
+      && files[0].content === sampleFor(previous);
+    if (onlyDefaultFile || files.length === 0) {
+      const project = defaultProject(language.id, sampleFor(language));
+      applyProject(project.files, project.entrypoint);
+      setExtraFolders([]);
+    }
     setResult(null);
     setError(null);
   };
 
   const handleCodeChange = (value: string | undefined) => {
-    setCode(value || '');
+    if (!activePath) {
+      return;
+    }
+    setFiles((current) => replaceFile(current, activePath, value || ''));
   };
 
   const handleReset = () => {
@@ -523,20 +571,21 @@ function App() {
       if (language) {
         setSelectedLanguage(language);
       }
-      setCode(originSnippet.code);
+      applyProject(originSnippet.files, originSnippet.entrypoint);
       setStdin(originSnippet.stdin);
       setResult(null);
       setError(null);
-      setBaseline(originSnippet.language, originSnippet.code, originSnippet.stdin);
+      setBaseline(originSnippet.language, originSnippet.files, originSnippet.entrypoint, originSnippet.stdin);
       return;
     }
     if (selectedLanguage) {
-      const nextCode = selectedLanguage.sampleCode || defaultSampleCodes[selectedLanguage.id] || '';
-      setCode(nextCode);
+      const project = defaultProject(selectedLanguage.id, sampleFor(selectedLanguage));
+      applyProject(project.files, project.entrypoint);
+      setExtraFolders([]);
       setStdin('');
       setResult(null);
       setError(null);
-      setBaseline(selectedLanguage.id, nextCode, '');
+      setBaseline(selectedLanguage.id, project.files, project.entrypoint, '');
     }
   };
 
@@ -545,10 +594,9 @@ function App() {
     if (!baseline || !selectedLanguage) {
       return false;
     }
-    return (
-      selectedLanguage.id !== baseline.language ||
-      code !== baseline.code ||
-      stdin !== baseline.stdin
+    return !projectsEqual(
+      { languageId: selectedLanguage.id, files, entrypoint, stdin },
+      { languageId: baseline.language, files: baseline.files, entrypoint: baseline.entrypoint, stdin: baseline.stdin },
     );
   };
 
@@ -557,13 +605,14 @@ function App() {
     if (language) {
       setSelectedLanguage(language);
     }
-    setCode(run.code);
+    const project = snapshotFromSnippet(run.language, run.code, run.files, run.entrypoint);
+    applyProject(project.files, project.entrypoint);
     setStdin(run.stdin);
     setResult(historyToResult(run));
     setViewedRunId(null);
     setError(null);
-    setBaseline(run.language, run.code, run.stdin);
-    setNotice('Restored code and stdin from the selected run.');
+    setBaseline(run.language, project.files, project.entrypoint, run.stdin);
+    setNotice('Restored project files and stdin from the selected run.');
     if (copyResetRef.current) {
       window.clearTimeout(copyResetRef.current);
     }
@@ -602,9 +651,15 @@ function App() {
   const isDirty = Boolean(
     originSnippet &&
       selectedLanguage &&
-      (selectedLanguage.id !== originSnippet.language ||
-        code !== originSnippet.code ||
-        stdin !== originSnippet.stdin)
+      !projectsEqual(
+        { languageId: selectedLanguage.id, files, entrypoint, stdin },
+        {
+          languageId: originSnippet.language,
+          files: originSnippet.files,
+          entrypoint: originSnippet.entrypoint,
+          stdin: originSnippet.stdin,
+        },
+      )
   );
 
   const shareUrlFor = (slug: string) => `${window.location.origin}/s/${slug}`;
@@ -622,11 +677,12 @@ function App() {
   };
 
   const handleShare = async () => {
-    if (!selectedLanguage || isSharing || !code.trim()) {
+    if (!selectedLanguage || isSharing || !entrypointContent(files, entrypoint).trim()) {
       return;
     }
-    if (utf8ByteLength(code) > MAX_CODE_BYTES) {
-      setError('Code exceeds the 256KB limit.');
+    const projectError = validateProject(files, entrypoint);
+    if (projectError) {
+      setError(projectError);
       return;
     }
 
@@ -651,7 +707,9 @@ function App() {
     try {
       const payload = {
         language: selectedLanguage.id,
-        code,
+        code: entrypointContent(files, entrypoint),
+        files,
+        entrypoint,
         stdin,
       };
       let saved: Snippet;
@@ -717,7 +775,7 @@ function App() {
         isRunning={isRunning}
         isSharing={isSharing}
         shareCopied={shareCopied}
-        canShare={Boolean(selectedLanguage && code.trim())}
+        canShare={Boolean(selectedLanguage && entrypointContent(files, entrypoint).trim())}
         shareLabel={shareLabel}
         theme={theme}
         onThemeToggle={handleThemeToggle}
@@ -757,11 +815,32 @@ function App() {
           onClear={() => setPendingClear(true)}
           onClose={() => setHistoryOpen(false)}
         />
-        <div className="flex-1 flex flex-col border-r border-editor-border">
+        <FileExplorer
+          files={files}
+          extraFolders={extraFolders}
+          activePath={activePath}
+          entrypoint={entrypoint}
+          onOpen={openFile}
+          onNewFile={(folder) => {
+            setNameError(null);
+            setNameDialog({ mode: 'file', folder });
+          }}
+          onNewFolder={(folder) => {
+            setNameError(null);
+            setNameDialog({ mode: 'folder', folder });
+          }}
+          onRename={(path) => {
+            setNameError(null);
+            setNameDialog({ mode: 'rename', path });
+          }}
+          onDelete={(path) => setPendingDelete(path)}
+          onSetEntrypoint={setEntrypoint}
+        />
+        <div className="flex-1 flex flex-col border-r border-editor-border min-w-0">
           <div className="px-4 py-2 bg-editor-sidebar border-b border-editor-border text-sm text-gray-400 flex items-center justify-between gap-3">
             {selectedLanguage ? (
               <span>
-                {selectedLanguage.name} • {selectedLanguage.extension}
+                {selectedLanguage.name} • {entrypoint || selectedLanguage.extension}
                 {originSnippet?.title ? ` • ${originSnippet.title}` : ''}
                 {isDirty ? (originSnippet?.ownedByMe ? ' • unsaved' : ' • unsaved fork') : ''}
               </span>
@@ -779,12 +858,21 @@ function App() {
               </span>
             )}
           </div>
-          <div className="flex-1">
+          <EditorTabs
+            tabs={openTabs}
+            activePath={activePath}
+            entrypoint={entrypoint}
+            onSelect={setActivePath}
+            onClose={closeTab}
+          />
+          <div className="flex-1 min-h-0">
             <CodeEditor
-              code={code}
+              path={activePath}
+              code={activeCode}
               onChange={handleCodeChange}
               language={selectedLanguage?.id || 'plaintext'}
               theme={theme}
+              knownPaths={files.map((file) => file.path)}
             />
           </div>
         </div>
@@ -828,7 +916,7 @@ function App() {
       <ConfirmDialog
         open={pendingRestore !== null}
         title="Restore this run?"
-        message="The editor has unsaved changes. Restore will replace the current code and stdin with the exact values from this run."
+        message="The editor has unsaved changes. Restore will replace the current project files and stdin with the exact values from this run."
         confirmLabel="Restore"
         onConfirm={() => {
           if (pendingRestore) {
@@ -843,6 +931,117 @@ function App() {
         open={loginOpen}
         nextPath={window.location.pathname}
         onClose={() => setLoginOpen(false)}
+      />
+
+      <NameDialog
+        key={nameDialog ? `${nameDialog.mode}:${'path' in nameDialog ? nameDialog.path : nameDialog.folder || ''}` : 'closed'}
+        open={nameDialog !== null}
+        title={
+          nameDialog?.mode === 'rename'
+            ? 'Rename file'
+            : nameDialog?.mode === 'folder'
+              ? 'New folder'
+              : 'New file'
+        }
+        message={
+          nameDialog?.mode === 'folder'
+            ? 'Folders are created when you add a file inside them. Use paths like src or lib/util.'
+            : 'Paths can include folders, for example src/Util.java'
+        }
+        label={nameDialog?.mode === 'folder' ? 'Folder path' : 'File path'}
+        confirmLabel={nameDialog?.mode === 'rename' ? 'Rename' : 'Create'}
+        initialValue={
+          nameDialog?.mode === 'rename'
+            ? nameDialog.path
+            : nameDialog?.mode === 'folder'
+              ? joinPath(nameDialog.folder || '', '')
+              : joinPath(
+                  nameDialog?.folder || '',
+                  selectedLanguage ? defaultFileName(selectedLanguage.id) : 'main.txt',
+                )
+        }
+        error={nameError}
+        onCancel={() => {
+          setNameDialog(null);
+          setNameError(null);
+        }}
+        onSubmit={(value) => {
+          try {
+            if (nameDialog?.mode === 'folder') {
+              const folder = normalizeProjectPath(`${value.replace(/\/+$/, '')}/placeholder.txt`).replace(/\/placeholder\.txt$/, '');
+              if (!folder) {
+                setNameError('Folder path is required');
+                return;
+              }
+              setExtraFolders((current) => current.includes(folder) ? current : [...current, folder]);
+              setNameDialog({ mode: 'file', folder });
+              setNameError(null);
+              return;
+            }
+            const path = normalizeProjectPath(value);
+            if (nameDialog?.mode === 'rename') {
+              if (files.some((file) => file.path === path && file.path !== nameDialog.path)) {
+                setNameError('A file already exists at that path');
+                return;
+              }
+              setFiles((current) => current.map((file) => (
+                file.path === nameDialog.path ? { ...file, path } : file
+              )));
+              setOpenTabs((tabs) => tabs.map((tab) => (tab === nameDialog.path ? path : tab)));
+              if (activePath === nameDialog.path) {
+                setActivePath(path);
+              }
+              if (entrypoint === nameDialog.path) {
+                setEntrypoint(path);
+              }
+            } else {
+              if (files.some((file) => file.path === path)) {
+                setNameError('A file already exists at that path');
+                return;
+              }
+              if (files.length >= 32) {
+                setNameError('Projects are limited to 32 files');
+                return;
+              }
+              setFiles((current) => [...current, { path, content: '' }]);
+              setExtraFolders((current) => current.filter((folder) => folder !== parentDir(path) && folder !== path));
+              openFile(path);
+            }
+            setNameDialog(null);
+            setNameError(null);
+          } catch (error) {
+            setNameError(error instanceof Error ? error.message : 'Invalid path');
+          }
+        }}
+      />
+
+      <ConfirmDialog
+        open={pendingDelete !== null}
+        title="Delete this file?"
+        message={pendingDelete ? `Remove ${pendingDelete} from the project.` : ''}
+        confirmLabel="Delete"
+        danger
+        onConfirm={() => {
+          if (!pendingDelete) {
+            return;
+          }
+          if (files.length <= 1) {
+            setError('A project needs at least one file.');
+            setPendingDelete(null);
+            return;
+          }
+          const remaining = files.filter((file) => file.path !== pendingDelete);
+          setFiles(remaining);
+          setOpenTabs((tabs) => tabs.filter((tab) => tab !== pendingDelete));
+          if (activePath === pendingDelete) {
+            setActivePath(remaining[0]?.path || '');
+          }
+          if (entrypoint === pendingDelete) {
+            setEntrypoint(remaining[0]?.path || '');
+          }
+          setPendingDelete(null);
+        }}
+        onCancel={() => setPendingDelete(null)}
       />
 
       <ConfirmDialog

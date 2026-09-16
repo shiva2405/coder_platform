@@ -1,18 +1,24 @@
-import React from 'react';
 import Editor, { OnMount } from '@monaco-editor/react';
 import { EditorTheme } from '../types';
-import { getMonacoLanguage } from '../services/monacoLanguage';
+import { getMonacoLanguageFromPath } from '../services/monacoLanguage';
 
 interface CodeEditorProps {
+  path?: string;
   code: string;
   onChange: (value: string | undefined) => void;
   language: string;
   theme: EditorTheme;
+  knownPaths?: string[];
 }
 
-const CodeEditor: React.FC<CodeEditorProps> = ({ code, onChange, language, theme }) => {
+const CodeEditor: React.FC<CodeEditorProps> = ({
+  path = 'untitled',
+  code,
+  onChange,
+  language,
+  theme,
+}) => {
   const handleEditorDidMount: OnMount = (editor, monaco) => {
-    // Configure editor settings
     editor.updateOptions({
       fontSize: 14,
       fontFamily: "'Fira Code', 'Cascadia Code', 'JetBrains Mono', Menlo, Monaco, 'Courier New', monospace",
@@ -41,13 +47,10 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ code, onChange, language, theme
       },
     });
 
-    // Add keyboard shortcut for running code (Ctrl/Cmd + Enter)
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter, () => {
-      // Dispatch custom event to trigger code execution
       window.dispatchEvent(new CustomEvent('run-code'));
     });
 
-    // Focus editor
     editor.focus();
   };
 
@@ -55,10 +58,12 @@ const CodeEditor: React.FC<CodeEditorProps> = ({ code, onChange, language, theme
     <div className="h-full w-full">
       <Editor
         height="100%"
-        language={getMonacoLanguage(language)}
+        path={path}
+        language={getMonacoLanguageFromPath(path, language)}
         value={code}
         onChange={onChange}
         theme={theme}
+        keepCurrentModel
         onMount={handleEditorDidMount}
         options={{
           automaticLayout: true,

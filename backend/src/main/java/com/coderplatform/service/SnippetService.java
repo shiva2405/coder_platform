@@ -2,6 +2,7 @@ package com.coderplatform.service;
 
 import com.coderplatform.config.SnippetConfig;
 import com.coderplatform.exception.ForbiddenException;
+import com.coderplatform.exception.InvalidProjectException;
 import com.coderplatform.exception.InvalidSnippetException;
 import com.coderplatform.exception.RateLimitExceededException;
 import com.coderplatform.exception.SnippetNotFoundException;
@@ -9,6 +10,7 @@ import com.coderplatform.exception.UnauthorizedException;
 import com.coderplatform.model.CreateSnippetRequest;
 import com.coderplatform.model.ForkSnippetRequest;
 import com.coderplatform.model.Language;
+import com.coderplatform.model.ProjectFile;
 import com.coderplatform.model.Snippet;
 import com.coderplatform.model.SnippetListResponse;
 import com.coderplatform.model.SnippetResponse;
@@ -17,6 +19,9 @@ import com.coderplatform.model.SnippetVisibility;
 import com.coderplatform.model.UpdateSnippetRequest;
 import com.coderplatform.model.User;
 import com.coderplatform.repository.SnippetRepository;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Sort;
@@ -39,6 +44,7 @@ public class SnippetService {
     private final SlugGenerator slugGenerator;
     private final SnippetRateLimiter rateLimiter;
     private final SnippetConfig config;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public SnippetService(
             SnippetRepository snippetRepository,
@@ -56,19 +62,19 @@ public class SnippetService {
     public SnippetResponse create(CreateSnippetRequest request, String clientIp, User user) {
         User owner = requireUser(user);
         String language = normalizeLanguage(request.getLanguage());
-        String code = request.getCode();
+        ProjectSources project = resolveProject(language, request.getCode(), request.getFiles(), request.getEntrypoint());
         String stdin = request.getStdin() != null ? request.getStdin() : "";
         String title = normalizeTitle(request.getTitle());
         SnippetVisibility visibility = request.getVisibility() != null
                 ? request.getVisibility()
                 : SnippetVisibility.PUBLIC;
 
-        validateContent(language, code, stdin, title);
+        validateStdinAndTitle(stdin, title);
         acquireRateLimit(owner, clientIp);
 
-        Snippet snippet = persist(language, code, stdin, title, visibility, owner, null);
+        Snippet snippet = persist(project, stdin, title, visibility, owner, null);
         logger.info("Created snippet {} for user {} language {}", snippet.getSlug(), owner.getId(), snippet.getLanguage());
-        return SnippetResponse.from(snippet, owner);
+        return toResponse(snippet, owner);
     }
 
     @Transactional
@@ -78,7 +84,7 @@ public class SnippetService {
             snippetRepository.incrementViewCount(slug);
             snippet.setViewCount(snippet.getViewCount() + 1);
         }
-        return SnippetResponse.from(snippet, viewer);
+        return toResponse(snippet, viewer);
     }
 
     @Transactional
@@ -90,19 +96,39 @@ public class SnippetService {
         String language = isBlank(body.getLanguage())
                 ? original.getLanguage()
                 : normalizeLanguage(body.getLanguage());
-        String code = body.getCode() != null ? body.getCode() : original.getCode();
+        ProjectSources originalProject = storedProject(original);
+        ProjectSources project;
+        if (body.getFiles() != null) {
+            project = resolveProject(language, body.getCode(), body.getFiles(), body.getEntrypoint());
+        } else if (body.getCode() != null && !language.equals(original.getLanguage())) {
+            project = resolveProject(language, body.getCode(), null, null);
+        } else if (body.getCode() != null) {
+            List<ProjectFile> files = originalProject.getFiles().stream()
+                    .map(file -> originalProject.getEntrypoint().equals(file.getPath())
+                            ? new ProjectFile(file.getPath(), body.getCode())
+                            : file)
+                    .toList();
+            project = resolveProject(language, body.getCode(), files, originalProject.getEntrypoint());
+        } else {
+            project = resolveProject(
+                    language,
+                    originalProject.entrypointContent(),
+                    originalProject.getFiles(),
+                    originalProject.getEntrypoint()
+            );
+        }
         String stdin = body.getStdin() != null ? body.getStdin() : nullToEmpty(original.getStdin());
         String title = body.getTitle() != null ? normalizeTitle(body.getTitle()) : original.getTitle();
         SnippetVisibility visibility = body.getVisibility() != null
                 ? body.getVisibility()
                 : SnippetVisibility.PUBLIC;
 
-        validateContent(language, code, stdin, title);
+        validateStdinAndTitle(stdin, title);
         acquireRateLimit(owner, clientIp);
 
-        Snippet forked = persist(language, code, stdin, title, visibility, owner, original.getSlug());
+        Snippet forked = persist(project, stdin, title, visibility, owner, original.getSlug());
         logger.info("Forked snippet {} from {} for user {}", forked.getSlug(), original.getSlug(), owner.getId());
-        return SnippetResponse.from(forked, owner);
+        return toResponse(forked, owner);
     }
 
     @Transactional
@@ -112,18 +138,29 @@ public class SnippetService {
         UpdateSnippetRequest body = request != null ? request : new UpdateSnippetRequest();
 
         String language = body.getLanguage() != null ? normalizeLanguage(body.getLanguage()) : snippet.getLanguage();
-        String code = body.getCode() != null ? body.getCode() : snippet.getCode();
+        ProjectSources current = storedProject(snippet);
+        List<ProjectFile> files = body.getFiles() != null ? body.getFiles() : current.getFiles();
+        String entrypoint = body.getEntrypoint() != null ? body.getEntrypoint() : current.getEntrypoint();
+        String code = body.getCode() != null ? body.getCode() : current.entrypointContent();
+        if (body.getFiles() == null && body.getCode() != null) {
+            files = current.getFiles().stream()
+                    .map(file -> current.getEntrypoint().equals(file.getPath())
+                            ? new ProjectFile(file.getPath(), body.getCode())
+                            : file)
+                    .toList();
+            code = body.getCode();
+        }
+        ProjectSources project = resolveProject(language, code, files, entrypoint);
         String stdin = body.getStdin() != null ? body.getStdin() : nullToEmpty(snippet.getStdin());
         String title = body.getTitle() != null ? normalizeTitle(body.getTitle()) : snippet.getTitle();
         SnippetVisibility visibility = body.getVisibility() != null ? body.getVisibility() : snippet.getVisibility();
 
-        validateContent(language, code, stdin, title);
-        snippet.setLanguage(language);
-        snippet.setCode(code);
+        validateStdinAndTitle(stdin, title);
+        applyProject(snippet, project);
         snippet.setStdin(stdin);
         snippet.setTitle(title);
         snippet.setVisibility(visibility);
-        return SnippetResponse.from(snippetRepository.save(snippet), owner);
+        return toResponse(snippetRepository.save(snippet), owner);
     }
 
     @Transactional
@@ -144,8 +181,7 @@ public class SnippetService {
     }
 
     private Snippet persist(
-            String language,
-            String code,
+            ProjectSources project,
             String stdin,
             String title,
             SnippetVisibility visibility,
@@ -154,8 +190,7 @@ public class SnippetService {
     ) {
         Snippet snippet = new Snippet();
         snippet.setSlug(nextUniqueSlug());
-        snippet.setLanguage(language);
-        snippet.setCode(code);
+        applyProject(snippet, project);
         snippet.setStdin(stdin != null ? stdin : "");
         snippet.setTitle(title);
         snippet.setVisibility(visibility != null ? visibility : SnippetVisibility.PUBLIC);
@@ -255,20 +290,71 @@ public class SnippetService {
     }
 
     void validateContent(String language, String code, String stdin, String title) {
-        if (isBlank(code)) {
-            throw new InvalidSnippetException("Code is required");
-        }
-        int codeBytes = byteLength(code);
-        if (codeBytes > config.getMaxCodeBytes()) {
-            throw new InvalidSnippetException("Code exceeds maximum size of 256KB");
-        }
+        resolveProject(language, code, null, null);
+        validateStdinAndTitle(stdin, title);
+    }
+
+    private void validateStdinAndTitle(String stdin, String title) {
         if (stdin != null && byteLength(stdin) > config.getMaxCodeBytes()) {
             throw new InvalidSnippetException("Stdin exceeds maximum size of 256KB");
         }
         if (title != null && title.length() > config.getMaxTitleLength()) {
             throw new InvalidSnippetException("Title must be at most 200 characters");
         }
-        normalizeLanguage(language);
+    }
+
+    private ProjectSources resolveProject(String language, String code, List<ProjectFile> files, String entrypoint) {
+        try {
+            return ProjectSources.resolve(language, code, files, entrypoint);
+        } catch (InvalidProjectException ex) {
+            throw new InvalidSnippetException(ex.getMessage());
+        }
+    }
+
+    private ProjectSources storedProject(Snippet snippet) {
+        List<ProjectFile> files = readFiles(snippet.getFilesJson());
+        try {
+            return ProjectSources.resolve(snippet.getLanguage(), snippet.getCode(), files, snippet.getEntrypoint());
+        } catch (InvalidProjectException | IllegalArgumentException ex) {
+            return ProjectSources.resolve(snippet.getLanguage(), snippet.getCode(), null, null);
+        }
+    }
+
+    private void applyProject(Snippet snippet, ProjectSources project) {
+        snippet.setLanguage(project.getLanguage());
+        snippet.setCode(project.entrypointContent());
+        snippet.setEntrypoint(project.getEntrypoint());
+        snippet.setFilesJson(writeFiles(project.getFiles()));
+    }
+
+    private SnippetResponse toResponse(Snippet snippet, User viewer) {
+        SnippetResponse response = SnippetResponse.from(snippet, viewer);
+        ProjectSources project = storedProject(snippet);
+        response.setFiles(project.getFiles());
+        response.setEntrypoint(project.getEntrypoint());
+        response.setCode(project.entrypointContent());
+        return response;
+    }
+
+    private List<ProjectFile> readFiles(String json) {
+        if (json == null || json.isBlank()) {
+            return List.of();
+        }
+        try {
+            List<ProjectFile> files = objectMapper.readValue(json, new TypeReference<>() {});
+            return files == null ? List.of() : files;
+        } catch (JsonProcessingException e) {
+            logger.warn("Failed to parse snippet files JSON", e);
+            return List.of();
+        }
+    }
+
+    private String writeFiles(List<ProjectFile> files) {
+        try {
+            return objectMapper.writeValueAsString(files);
+        } catch (JsonProcessingException e) {
+            throw new IllegalStateException("Failed to serialize project files", e);
+        }
     }
 
     private String normalizeLanguage(String language) {

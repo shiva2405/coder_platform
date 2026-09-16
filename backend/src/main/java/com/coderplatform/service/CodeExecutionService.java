@@ -5,8 +5,11 @@ import com.coderplatform.model.CodeExecutionRequest;
 import com.coderplatform.model.CodeExecutionResponse;
 import com.coderplatform.model.Language;
 import com.coderplatform.model.LanguageInfo;
+import com.coderplatform.observability.ExecutionMetrics;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.*;
@@ -22,26 +25,57 @@ public class CodeExecutionService {
 
     private final ExecutionConfig config;
     private final LanguageExecutor languageExecutor;
+    private final ExecutionMetrics metrics;
 
     public CodeExecutionService(ExecutionConfig config, LanguageExecutor languageExecutor) {
+        this(config, languageExecutor, null);
+    }
+
+    @Autowired
+    public CodeExecutionService(ExecutionConfig config, LanguageExecutor languageExecutor, ExecutionMetrics metrics) {
         this.config = config;
         this.languageExecutor = languageExecutor;
+        this.metrics = metrics;
     }
 
     public CodeExecutionResponse execute(CodeExecutionRequest request) {
-        try (PreparedProgram program = prepare(request.getLanguage(), request.getCode())) {
+        try {
+            return execute(resolve(request), request.getStdin());
+        } catch (com.coderplatform.exception.InvalidProjectException e) {
+            return record(request.getLanguage(), CodeExecutionResponse.error(e.getMessage()));
+        } catch (IllegalArgumentException e) {
+            String language = request.getLanguage();
+            return record(language, CodeExecutionResponse.error("Unsupported language: " + language));
+        }
+    }
+
+    public CodeExecutionResponse execute(ProjectSources sources, String stdin) {
+        String language = sources.getLanguage();
+        MDC.put("language", language == null ? "" : language);
+        try (PreparedProgram program = prepare(sources)) {
             CompileResult compileResult = program.compile();
             if (!compileResult.isSuccess()) {
-                return compileResult.getErrorResponse();
+                return record(language, compileResult.getErrorResponse());
             }
-            return program.run(request.getStdin(), config.getTimeout(), config.getMemoryLimit());
+            return record(language, program.run(stdin, config.getTimeout(), config.getMemoryLimit()));
         } catch (IllegalArgumentException e) {
             logger.error("Invalid language: {}", e.getMessage());
-            return CodeExecutionResponse.error("Unsupported language: " + request.getLanguage());
+            return record(language, CodeExecutionResponse.error("Unsupported language: " + language));
         } catch (Exception e) {
             logger.error("Execution error", e);
-            return CodeExecutionResponse.error("Execution failed: " + e.getMessage());
+            return record(language, CodeExecutionResponse.error("Execution failed: " + e.getMessage()));
+        } finally {
+            MDC.remove("language");
         }
+    }
+
+    public ProjectSources resolve(CodeExecutionRequest request) {
+        return ProjectSources.resolve(
+                request.getLanguage(),
+                request.getCode(),
+                request.getFiles(),
+                request.getEntrypoint()
+        );
     }
 
     /**
@@ -49,8 +83,12 @@ public class CodeExecutionService {
      * and then run many times against the same compiled output.
      */
     public PreparedProgram prepare(String languageId, String code) {
+        return prepare(ProjectSources.resolve(languageId, code, null, null));
+    }
+
+    public PreparedProgram prepare(ProjectSources sources) {
         try {
-            return new ExecutionSession(languageId, code);
+            return new ExecutionSession(sources);
         } catch (IllegalArgumentException e) {
             throw e;
         } catch (Exception e) {
@@ -58,22 +96,20 @@ public class CodeExecutionService {
         }
     }
 
-    private String extractJavaClassName(String code) {
-        // Simple regex to find public class name
-        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(
-            "public\\s+class\\s+(\\w+)"
-        );
-        java.util.regex.Matcher matcher = pattern.matcher(code);
-        if (matcher.find()) {
-            return matcher.group(1);
-        }
-        return "Main";
+    private ProcessResult runProcess(List<String> command, File workDir, String stdin, long timeoutMs)
+            throws IOException, InterruptedException {
+        return runProcess(command, workDir, stdin, timeoutMs, Map.of());
     }
 
-    private ProcessResult runProcess(List<String> command, File workDir, String stdin, long timeoutMs) 
-            throws IOException, InterruptedException {
+    private ProcessResult runProcess(
+            List<String> command,
+            File workDir,
+            String stdin,
+            long timeoutMs,
+            Map<String, String> extraEnv
+    ) throws IOException, InterruptedException {
         
-        ProcessBuilder pb = processBuilder(command, workDir);
+        ProcessBuilder pb = processBuilder(command, workDir, extraEnv);
         
         // Read stdout and stderr using dedicated threads with pre-allocated buffers
         StringBuilder stdout = new StringBuilder(4096);
@@ -146,14 +182,20 @@ public class CodeExecutionService {
         stderrReader.join(500);
 
         int exitCode = process.exitValue();
-        boolean memoryExceeded = stderr.toString().contains("OutOfMemoryError") 
-                              || stderr.toString().contains("Cannot allocate memory")
-                              || stderr.toString().contains("Too small maximum heap");
+        String errorText = stderr.toString();
+        boolean memoryExceeded = errorText.contains("OutOfMemoryError")
+                              || errorText.contains("Cannot allocate memory")
+                              || errorText.contains("Too small maximum heap")
+                              || errorText.contains("MemoryError");
 
         return new ProcessResult(exitCode, stdout.toString(), stderr.toString(), false, memoryExceeded, actualExecutionTimeMs);
     }
 
     private static ProcessBuilder processBuilder(List<String> command, File workDir) {
+        return processBuilder(command, workDir, Map.of());
+    }
+
+    private static ProcessBuilder processBuilder(List<String> command, File workDir, Map<String, String> extraEnv) {
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.directory(workDir);
         pb.redirectErrorStream(false);
@@ -161,6 +203,9 @@ public class CodeExecutionService {
         env.put("LANG", "en_US.UTF-8");
         env.put("PYTHONUNBUFFERED", "1");
         env.put("PYTHONIOENCODING", "UTF-8");
+        if (extraEnv != null) {
+            env.putAll(extraEnv);
+        }
         return pb;
     }
 
@@ -247,22 +292,18 @@ public class CodeExecutionService {
         private final Language language;
         private final Path workDir;
         private final File workDirFile;
-        private final File sourceFile;
+        private final ProjectLayout layout;
+        private final String entrypointSource;
         private boolean compiled;
         private boolean closed;
 
-        private ExecutionSession(String languageId, String code) throws IOException {
-            this.language = Language.fromId(languageId);
+        private ExecutionSession(ProjectSources sources) throws IOException {
+            this.language = Language.fromId(sources.getLanguage());
             this.workDir = Files.createTempDirectory("coder-");
             this.workDirFile = workDir.toFile();
-
-            String fileName = languageExecutor.getDefaultFileName(language);
-            if (language == Language.JAVA) {
-                fileName = extractJavaClassName(code) + ".java";
-            }
-            this.sourceFile = new File(workDirFile, fileName);
-            Files.writeString(sourceFile.toPath(), code);
-            logger.info("Prepared {} program in {}", language, workDir);
+            this.layout = sources.materialize(workDir);
+            this.entrypointSource = sources.entrypointContent();
+            logger.info("Prepared {} project ({} files) in {}", language.getId(), sources.getFiles().size(), workDir);
         }
 
         @Override
@@ -270,7 +311,7 @@ public class CodeExecutionService {
             ensureOpen();
             try {
                 if (language.isRequiresCompilation()) {
-                    List<String> compileCmd = languageExecutor.getCompileCommand(language, sourceFile, workDirFile);
+                    List<String> compileCmd = languageExecutor.getCompileCommand(language, layout, entrypointSource);
                     if (!compileCmd.isEmpty()) {
                         ProcessResult compileResult = runProcess(compileCmd, workDirFile, null, config.getTimeout());
                         if (compileResult.timedOut) {
@@ -302,8 +343,14 @@ public class CodeExecutionService {
             try {
                 long runTimeout = timeoutMs > 0 ? timeoutMs : config.getTimeout();
                 long memoryLimit = memoryLimitBytes > 0 ? memoryLimitBytes : config.getMemoryLimit();
-                List<String> runCmd = languageExecutor.getRunCommand(language, sourceFile, workDirFile, memoryLimit);
-                ProcessResult runResult = runProcess(runCmd, workDirFile, stdin, runTimeout);
+                List<String> runCmd = languageExecutor.getRunCommand(language, layout, entrypointSource, memoryLimit);
+                ProcessResult runResult = runProcess(
+                        runCmd,
+                        workDirFile,
+                        stdin,
+                        runTimeout,
+                        languageExecutor.getRunEnvironment(language, layout)
+                );
                 long executionTime = runResult.executionTimeMs;
 
                 if (runResult.timedOut) {
@@ -333,8 +380,8 @@ public class CodeExecutionService {
                 throw new IllegalStateException("compile() must be called before start()");
             }
             long memoryLimit = memoryLimitBytes > 0 ? memoryLimitBytes : config.getMemoryLimit();
-            List<String> runCmd = languageExecutor.getRunCommand(language, sourceFile, workDirFile, memoryLimit);
-            ProcessBuilder pb = processBuilder(runCmd, workDirFile);
+            List<String> runCmd = languageExecutor.getRunCommand(language, layout, entrypointSource, memoryLimit);
+            ProcessBuilder pb = processBuilder(runCmd, workDirFile, languageExecutor.getRunEnvironment(language, layout));
             long startedAt = System.nanoTime();
             return new JvmStartedProcess(pb.start(), startedAt);
         }
@@ -357,6 +404,16 @@ public class CodeExecutionService {
                 throw new IllegalStateException("Prepared program has already been closed");
             }
         }
+    }
+
+    private CodeExecutionResponse record(String language, CodeExecutionResponse response) {
+        if (metrics != null) {
+            metrics.record(language, response);
+        }
+        if (response != null) {
+            logger.info("Execution completed status={} timeMs={}", response.getStatus(), response.getExecutionTime());
+        }
+        return response;
     }
 
     private static class ProcessResult {

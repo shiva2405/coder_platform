@@ -1,15 +1,21 @@
 package com.coderplatform.model;
 
+import jakarta.validation.constraints.AssertTrue;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
+
+import java.util.List;
 
 public class CreateSnippetRequest {
 
     @NotBlank(message = "Language is required")
     private String language;
 
-    @NotBlank(message = "Code is required")
     private String code;
+
+    private List<ProjectFile> files;
+
+    private String entrypoint;
 
     private String stdin = "";
 
@@ -66,5 +72,32 @@ public class CreateSnippetRequest {
 
     public void setVisibility(SnippetVisibility visibility) {
         this.visibility = visibility;
+    }
+
+    public List<ProjectFile> getFiles() {
+        return files;
+    }
+
+    public void setFiles(List<ProjectFile> files) {
+        this.files = files;
+    }
+
+    public String getEntrypoint() {
+        return entrypoint;
+    }
+
+    public void setEntrypoint(String entrypoint) {
+        this.entrypoint = entrypoint;
+    }
+
+    @AssertTrue(message = "Code is required")
+    public boolean isSourcePresent() {
+        if (code != null && !code.isBlank()) {
+            return true;
+        }
+        if (files == null || files.isEmpty()) {
+            return false;
+        }
+        return files.stream().anyMatch(file -> file != null && file.getPath() != null && !file.getPath().isBlank());
     }
 }

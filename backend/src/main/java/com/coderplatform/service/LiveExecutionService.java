@@ -4,9 +4,12 @@ import com.coderplatform.config.ExecutionConfig;
 import com.coderplatform.exception.AdmissionRejectedException;
 import com.coderplatform.exception.RateLimitExceededException;
 import com.coderplatform.model.CodeExecutionResponse;
+import com.coderplatform.observability.ExecutionMetrics;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -26,6 +29,7 @@ public class LiveExecutionService {
     private final CodeExecutionService executionService;
     private final ExecutionConfig config;
     private final ExecutionAdmissionService admission;
+    private final ExecutionMetrics metrics;
     private final ConcurrentHashMap<String, LiveExecution> active = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, String> ownerToExecution = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, PendingStart> pending = new ConcurrentHashMap<>();
@@ -37,9 +41,20 @@ public class LiveExecutionService {
             ExecutionConfig config,
             ExecutionAdmissionService admission
     ) {
+        this(executionService, config, admission, null);
+    }
+
+    @Autowired
+    public LiveExecutionService(
+            CodeExecutionService executionService,
+            ExecutionConfig config,
+            ExecutionAdmissionService admission,
+            ExecutionMetrics metrics
+    ) {
         this.executionService = executionService;
         this.config = config;
         this.admission = admission;
+        this.metrics = metrics;
         this.workers = Executors.newCachedThreadPool(runnable -> {
             Thread thread = new Thread(runnable, "live-execution-worker");
             thread.setDaemon(true);
@@ -76,9 +91,36 @@ public class LiveExecutionService {
         if (language == null || language.isBlank()) {
             throw new IllegalArgumentException("Language is required");
         }
-        if (code == null || code.isBlank()) {
+        return start(ownerId, ProjectSources.resolve(language, code, null, null), initialStdin, client, listener);
+    }
+
+    public String start(
+            String ownerId,
+            String language,
+            String code,
+            java.util.List<com.coderplatform.model.ProjectFile> files,
+            String entrypoint,
+            String initialStdin,
+            ClientKey client,
+            LiveExecutionListener listener
+    ) {
+        return start(ownerId, ProjectSources.resolve(language, code, files, entrypoint), initialStdin, client, listener);
+    }
+
+    public String start(
+            String ownerId,
+            ProjectSources sources,
+            String initialStdin,
+            ClientKey client,
+            LiveExecutionListener listener
+    ) {
+        if (ownerId == null || ownerId.isBlank()) {
+            throw new IllegalArgumentException("Owner is required");
+        }
+        if (sources == null) {
             throw new IllegalArgumentException("Code is required");
         }
+        String language = sources.getLanguage();
 
         releaseOwner(ownerId);
 
@@ -127,7 +169,7 @@ public class LiveExecutionService {
                 notifyAdmissionFailure(listener, error);
                 return;
             }
-            beginExecution(id, ownerId, language, code, initialStdin, listener, lease);
+            beginExecution(id, ownerId, sources, initialStdin, instrument(language, listener), lease);
         });
 
         logger.info("Admitted live execution {} for owner {} ({})", id, ownerId, handle.state());
@@ -213,8 +255,7 @@ public class LiveExecutionService {
     private void beginExecution(
             String id,
             String ownerId,
-            String language,
-            String code,
+            ProjectSources sources,
             String initialStdin,
             LiveExecutionListener listener,
             ExecutionAdmissionService.Lease lease
@@ -234,7 +275,7 @@ public class LiveExecutionService {
         listener.onStarted(id);
 
         try {
-            workers.submit(() -> execution.execute(language, code, initialStdin == null ? "" : initialStdin, scheduler));
+            workers.submit(() -> execution.execute(sources, initialStdin == null ? "" : initialStdin, scheduler));
         } catch (RejectedExecutionException e) {
             execution.stop();
             throw new IllegalStateException("Live execution is unavailable", e);
@@ -267,6 +308,46 @@ public class LiveExecutionService {
         ownerToExecution.remove(ownerId, id);
         lease.close();
         logger.info("Cleaned up live execution {}", id);
+    }
+
+    private LiveExecutionListener instrument(String language, LiveExecutionListener delegate) {
+        if (metrics == null || delegate == null) {
+            return delegate;
+        }
+        return new LiveExecutionListener() {
+            @Override
+            public void onQueued(String executionId, int position, long estimatedWaitMs) {
+                delegate.onQueued(executionId, position, estimatedWaitMs);
+            }
+
+            @Override
+            public void onStarted(String executionId) {
+                MDC.put("jobId", executionId);
+                MDC.put("language", language);
+                delegate.onStarted(executionId);
+            }
+
+            @Override
+            public void onStdout(String chunk) {
+                delegate.onStdout(chunk);
+            }
+
+            @Override
+            public void onStderr(String chunk) {
+                delegate.onStderr(chunk);
+            }
+
+            @Override
+            public void onCompleted(CodeExecutionResponse result) {
+                metrics.record(language, result);
+                delegate.onCompleted(result);
+            }
+
+            @Override
+            public void onRejected(String message, long retryAfterSeconds, String reason) {
+                delegate.onRejected(message, retryAfterSeconds, reason);
+            }
+        };
     }
 
     private static void notifyAdmissionFailure(LiveExecutionListener listener, Throwable error) {

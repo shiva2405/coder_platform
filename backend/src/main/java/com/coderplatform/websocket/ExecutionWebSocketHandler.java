@@ -66,7 +66,7 @@ public class ExecutionWebSocketHandler extends TextWebSocketHandler {
             }
         } catch (RateLimitExceededException e) {
             send(session, LiveServerMessage.rejected(e.getMessage(), e.getRetryAfterSeconds(), e.getReason()));
-        } catch (IllegalArgumentException | IllegalStateException e) {
+        } catch (IllegalArgumentException | IllegalStateException | com.coderplatform.exception.InvalidProjectException e) {
             send(session, LiveServerMessage.error(e.getMessage()));
         } catch (IOException e) {
             send(session, LiveServerMessage.error("Failed to write input"));
@@ -95,6 +95,19 @@ public class ExecutionWebSocketHandler extends TextWebSocketHandler {
             ip = "unknown";
         }
         quotaService.consume(user, ip);
+        if (message.getFiles() != null && !message.getFiles().isEmpty()) {
+            liveExecutionService.start(
+                    session.getId(),
+                    message.getLanguage(),
+                    message.getCode(),
+                    message.getFiles(),
+                    message.getEntrypoint(),
+                    message.getStdin(),
+                    ClientKey.of(user, ip),
+                    new SocketListener(session)
+            );
+            return;
+        }
         liveExecutionService.start(
                 session.getId(),
                 message.getLanguage(),

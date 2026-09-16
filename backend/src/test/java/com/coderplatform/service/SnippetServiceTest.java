@@ -82,6 +82,42 @@ class SnippetServiceTest {
         assertThat(response.getForkedFrom()).isNull();
         assertThat(response.getVisibility()).isEqualTo(SnippetVisibility.PUBLIC);
         assertThat(response.isOwnedByMe()).isTrue();
+        assertThat(response.getEntrypoint()).isEqualTo("main.py");
+        assertThat(response.getFiles()).extracting(com.coderplatform.model.ProjectFile::getPath)
+                .containsExactly("main.py");
+    }
+
+    @Test
+    void createPersistsMultiFileProject() {
+        when(rateLimiter.tryAcquire(anyString(), anyInt())).thenReturn(true);
+        when(slugGenerator.generate(8)).thenReturn("proj1234");
+        when(snippetRepository.existsBySlug("proj1234")).thenReturn(false);
+        when(snippetRepository.save(any(Snippet.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        CreateSnippetRequest request = new CreateSnippetRequest("java", null, "", "Java project");
+        request.setFiles(List.of(
+                new com.coderplatform.model.ProjectFile("Main.java", "public class Main {}"),
+                new com.coderplatform.model.ProjectFile("Util.java", "public class Util {}")
+        ));
+        request.setEntrypoint("Main.java");
+
+        SnippetResponse response = snippetService.create(request, "1.1.1.1", owner(7L));
+
+        assertThat(response.getEntrypoint()).isEqualTo("Main.java");
+        assertThat(response.getFiles()).hasSize(2);
+        assertThat(response.getCode()).isEqualTo("public class Main {}");
+    }
+
+    @Test
+    void createRejectsPathTraversal() {
+        CreateSnippetRequest request = new CreateSnippetRequest("python", null, "", null);
+        request.setFiles(List.of(new com.coderplatform.model.ProjectFile("../secret.py", "print(1)")));
+        request.setEntrypoint("../secret.py");
+
+        assertThatThrownBy(() -> snippetService.create(request, "1.1.1.1", owner(1L)))
+                .isInstanceOf(InvalidSnippetException.class)
+                .hasMessageContaining("..");
+        verify(snippetRepository, never()).save(any());
     }
 
     @Test

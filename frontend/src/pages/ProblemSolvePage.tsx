@@ -6,7 +6,8 @@ import CodeEditor from '../components/CodeEditor';
 import UserMenu from '../components/UserMenu';
 import JudgeResults from '../components/JudgeResults';
 import LanguageSelector from '../components/LanguageSelector';
-import { getLanguages, getProblem, getSubmission, listSubmissions, runSamples, submitSolution } from '../services/api';
+import { getProblem, getSubmission, listSubmissions, runSamples, submitSolution } from '../services/api';
+import { loadLanguages } from '../services/defaultLanguages';
 import { RateLimitedError, rateLimitFromAxios } from '../services/rateLimit';
 import { starterCode } from '../services/problemTemplates';
 import {
@@ -67,7 +68,8 @@ export default function ProblemSolvePage() {
     }
     const load = async () => {
       try {
-        const [problemData, langs] = await Promise.all([getProblem(slug), getLanguages().catch(() => [] as Language[])]);
+        const [problemData, languageLoad] = await Promise.all([getProblem(slug), loadLanguages()]);
+        const langs = languageLoad.languages;
         setProblem(problemData);
         setLanguages(langs);
         const python = langs.find((language) => language.id === 'python') || langs[0] || null;

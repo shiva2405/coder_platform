@@ -45,6 +45,10 @@ public class SnippetRateLimiter {
         }
     }
 
+    public int trackedKeyCount() {
+        return hits.size();
+    }
+
     public long retryAfterSeconds(String key) {
         return retryAfterSeconds(key, System.currentTimeMillis());
     }

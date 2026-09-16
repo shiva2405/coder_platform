@@ -1,0 +1,10 @@
+apiVersion: 1
+
+providers:
+  - name: coder-platform
+    folder: Coder Platform
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

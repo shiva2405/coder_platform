@@ -8,6 +8,8 @@ public class LiveClientMessage {
     private String type;
     private String language;
     private String code;
+    private java.util.List<ProjectFile> files;
+    private String entrypoint;
     private String stdin;
     private String data;
 
@@ -33,6 +35,22 @@ public class LiveClientMessage {
 
     public void setCode(String code) {
         this.code = code;
+    }
+
+    public java.util.List<ProjectFile> getFiles() {
+        return files;
+    }
+
+    public void setFiles(java.util.List<ProjectFile> files) {
+        this.files = files;
+    }
+
+    public String getEntrypoint() {
+        return entrypoint;
+    }
+
+    public void setEntrypoint(String entrypoint) {
+        this.entrypoint = entrypoint;
     }
 
     public String getStdin() {

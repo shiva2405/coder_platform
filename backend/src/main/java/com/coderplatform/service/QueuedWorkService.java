@@ -9,6 +9,7 @@ import com.coderplatform.model.WorkTicketResponse;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
@@ -70,12 +71,18 @@ public class QueuedWorkService {
                 job.reject(message, retryAfterSeconds, reason);
             }
         });
+        java.util.Map<String, String> callerContext = MDC.getCopyOfContextMap();
         handle.whenReady().whenComplete((lease, error) -> {
             if (error != null) {
                 job.fail(error);
                 return;
             }
             workers.execute(() -> {
+                if (callerContext != null) {
+                    MDC.setContextMap(callerContext);
+                }
+                MDC.put("jobId", handle.id());
+                MDC.put("language", language == null ? "" : language);
                 job.markRunning();
                 try {
                     T result = work.call();
@@ -85,10 +92,15 @@ public class QueuedWorkService {
                     job.fail(e);
                 } finally {
                     lease.close();
+                    MDC.clear();
                 }
             });
         });
         return job.toResponse();
+    }
+
+    public int jobCount() {
+        return jobs.size();
     }
 
     public WorkTicketResponse get(String id) {

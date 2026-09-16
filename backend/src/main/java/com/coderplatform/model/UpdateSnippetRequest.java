@@ -2,10 +2,14 @@ package com.coderplatform.model;
 
 import jakarta.validation.constraints.Size;
 
+import java.util.List;
+
 public class UpdateSnippetRequest {
 
     private String language;
     private String code;
+    private List<ProjectFile> files;
+    private String entrypoint;
     private String stdin;
 
     @Size(max = 200, message = "Title must be at most 200 characters")
@@ -51,5 +55,21 @@ public class UpdateSnippetRequest {
 
     public void setVisibility(SnippetVisibility visibility) {
         this.visibility = visibility;
+    }
+
+    public List<ProjectFile> getFiles() {
+        return files;
+    }
+
+    public void setFiles(List<ProjectFile> files) {
+        this.files = files;
+    }
+
+    public String getEntrypoint() {
+        return entrypoint;
+    }
+
+    public void setEntrypoint(String entrypoint) {
+        this.entrypoint = entrypoint;
     }
 }
